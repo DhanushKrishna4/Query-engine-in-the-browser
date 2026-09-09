@@ -1,0 +1,284 @@
+# Three-valued logic.
+#
+# This is the file that matters. Every case here is one an engine can get wrong
+# while still looking correct on a happy-path demo, and every expected result
+# comes from SQLite rather than from anyone's recollection of the standard.
+
+load people data/people.csv
+load orders data/orders.csv
+
+# A comparison against NULL is UNKNOWN, so neither the predicate nor its
+# negation matches the row. Alan (id 3) and Tim (id 9) have NULL scores.
+query I rowsort
+SELECT id FROM people WHERE score > 8
+----
+1
+10
+2
+5
+6
+7
+8
+
+query I rowsort
+SELECT id FROM people WHERE NOT (score > 8)
+----
+4
+
+# `= NULL` is never true, not even for a NULL value.
+query I rowsort
+SELECT id FROM people WHERE score = NULL
+----
+
+query I rowsort
+SELECT id FROM people WHERE NULL = NULL
+----
+
+query I rowsort
+SELECT id FROM people WHERE score IS NULL
+----
+3
+9
+
+query I rowsort
+SELECT id FROM people WHERE score IS NOT NULL
+----
+1
+10
+2
+4
+5
+6
+7
+8
+
+# AND: a FALSE settles the answer even against an UNKNOWN.
+query I rowsort
+SELECT id FROM people WHERE 1 = 2 AND score > 8
+----
+
+# OR: a TRUE settles it, so the NULL-score rows come back too.
+query I rowsort
+SELECT id FROM people WHERE 1 = 1 OR score > 8
+----
+1
+10
+2
+3
+4
+5
+6
+7
+8
+9
+
+# TRUE AND UNKNOWN is UNKNOWN, so the NULL-score rows drop out.
+query I rowsort
+SELECT id FROM people WHERE 1 = 1 AND score > 8
+----
+1
+10
+2
+5
+6
+7
+8
+
+# The NOT IN trap: with a NULL in the list, no row can ever be TRUE.
+query I rowsort
+SELECT id FROM people WHERE city NOT IN ('London', NULL)
+----
+
+query I rowsort
+SELECT id FROM people WHERE city NOT IN ('London')
+----
+10
+2
+4
+5
+6
+7
+8
+
+# IN still matches on a real hit even with a NULL present.
+query I rowsort
+SELECT id FROM people WHERE city IN ('Austin', NULL)
+----
+4
+
+query I rowsort
+SELECT id FROM people WHERE city IN ('Nowhere', NULL)
+----
+
+# NULL propagates through arithmetic and concatenation.
+query IR rowsort
+SELECT id, score + 1 FROM people
+----
+1
+10.500
+10
+9.400
+2
+9.250
+3
+NULL
+4
+8.000
+5
+10.500
+6
+10.900
+7
+9.800
+8
+10.100
+9
+NULL
+
+query IT rowsort
+SELECT id, name || NULL FROM people WHERE id < 3
+----
+1
+NULL
+2
+NULL
+
+query IR rowsort
+SELECT id, -score FROM people WHERE id IN (1, 3)
+----
+1
+-9.500
+3
+NULL
+
+# BETWEEN and LIKE propagate NULL as well.
+query II rowsort
+SELECT id, score BETWEEN 1 AND 10 FROM people
+----
+1
+1
+10
+1
+2
+1
+3
+NULL
+4
+1
+5
+1
+6
+1
+7
+1
+8
+1
+9
+NULL
+
+query I rowsort
+SELECT id FROM people WHERE score BETWEEN 9 AND 10
+----
+1
+5
+6
+8
+
+query I rowsort
+SELECT id FROM people WHERE hired IS NULL
+----
+4
+
+query I rowsort
+SELECT order_id FROM orders WHERE shipped IS NULL
+----
+1008
+
+# An UNKNOWN CASE condition is not a match, so it falls through to ELSE.
+query IT rowsort
+SELECT id, CASE WHEN score > 9 THEN 'high' ELSE 'other' END FROM people
+----
+1
+high
+10
+other
+2
+other
+3
+other
+4
+other
+5
+high
+6
+high
+7
+other
+8
+high
+9
+other
+
+# A missing ELSE yields NULL rather than an error.
+query IT rowsort
+SELECT id, CASE WHEN score > 9 THEN 'high' END FROM people
+----
+1
+high
+10
+NULL
+2
+NULL
+3
+NULL
+4
+NULL
+5
+high
+6
+high
+7
+NULL
+8
+high
+9
+NULL
+
+# A simple CASE against a NULL operand falls through: `NULL = 9.5` is UNKNOWN.
+query IT rowsort
+SELECT id, CASE score WHEN 9.5 THEN 'nine-five' ELSE 'no' END FROM people
+----
+1
+nine-five
+10
+no
+2
+no
+3
+no
+4
+no
+5
+nine-five
+6
+no
+7
+no
+8
+no
+9
+no
+
+# NULL is not equal to NULL, so a self-comparison of a nullable column
+# excludes the NULL rows.
+query I rowsort
+SELECT id FROM people WHERE score = score
+----
+1
+10
+2
+4
+5
+6
+7
+8

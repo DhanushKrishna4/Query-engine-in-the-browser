@@ -1,0 +1,421 @@
+# B+ tree index scans and bloom-filtered scans.
+#
+# An index changes which rows are *read*, never which rows are *returned*, so
+# every query here is checked against SQLite exactly like every other file in
+# the corpus. That is the whole point: the oracle does not know the index
+# exists, and the answers must not either.
+#
+# The `index` directive is engine-only -- there is no DDL -- and
+# `tools/gen_expected.py` passes it through untouched.
+
+load people data/people.csv
+load orders data/orders.csv
+
+index people id
+index people city
+index people score
+index orders person_id
+
+# --- equality, the shape an index serves best -------------------------------
+
+query IT
+SELECT id, name FROM people WHERE id = 5
+----
+5
+Barbara Liskov
+
+query IT
+SELECT id, name FROM people WHERE city = 'London'
+----
+1
+Ada Lovelace
+3
+Alan Turing
+9
+Tim Berners-Lee
+
+# No such row. The tree finds nothing; so must the filter above it.
+query IT
+SELECT id, name FROM people WHERE id = 999
+----
+
+query IT
+SELECT id, name FROM people WHERE city = 'Atlantis'
+----
+
+# --- ranges -----------------------------------------------------------------
+
+query IT
+SELECT id, name FROM people WHERE id > 7
+----
+8
+Margaret Hamilton
+9
+Tim Berners-Lee
+10
+Frances Allen
+
+query IT
+SELECT id, name FROM people WHERE id >= 3 AND id <= 5
+----
+3
+Alan Turing
+4
+Edsger Dijkstra
+5
+Barbara Liskov
+
+query IT
+SELECT id, name FROM people WHERE id BETWEEN 4 AND 6
+----
+4
+Edsger Dijkstra
+5
+Barbara Liskov
+6
+Donald Knuth
+
+# Two conjuncts narrowing the same bound: the tighter one must win.
+query IT
+SELECT id, name FROM people WHERE id > 2 AND id > 6
+----
+7
+Katherine Johnson
+8
+Margaret Hamilton
+9
+Tim Berners-Lee
+10
+Frances Allen
+
+query IT
+SELECT id, name FROM people WHERE id < 9 AND id <= 4
+----
+1
+Ada Lovelace
+2
+Grace Hopper
+3
+Alan Turing
+4
+Edsger Dijkstra
+
+# An empty interval.
+query IT
+SELECT id, name FROM people WHERE id > 8 AND id < 3
+----
+
+# The literal on the left, so the comparison has to be mirrored.
+query IT
+SELECT id, name FROM people WHERE 6 < id
+----
+7
+Katherine Johnson
+8
+Margaret Hamilton
+9
+Tim Berners-Lee
+10
+Frances Allen
+
+query T
+SELECT name FROM people WHERE 'London' = city
+----
+Ada Lovelace
+Alan Turing
+Tim Berners-Lee
+
+# --- NULLs: the boundary the tree is not allowed to cross --------------------
+#
+# `score` is indexed and has NULLs, which are deliberately absent from the tree.
+# Serving IS NULL from the index would return nothing at all, so the planner
+# must refuse it -- these two records are what proves it does.
+
+query I
+SELECT id FROM people WHERE score IS NULL
+----
+3
+9
+
+query I
+SELECT id FROM people WHERE score IS NOT NULL
+----
+1
+2
+4
+5
+6
+7
+8
+10
+
+# `= NULL` is UNKNOWN for every row, index or no index.
+query I
+SELECT id FROM people WHERE score = NULL
+----
+
+# A range on the nullable indexed column: NULLs must stay out of the answer,
+# which they do for the ordinary three-valued reason, not because of the index.
+query IR
+SELECT id, score FROM people WHERE score > 9.0
+----
+1
+9.500
+5
+9.500
+6
+9.900
+8
+9.100
+
+# --- predicates the index cannot serve, which must still be right -----------
+
+query IT
+SELECT id, name FROM people WHERE id <> 5
+----
+1
+Ada Lovelace
+2
+Grace Hopper
+3
+Alan Turing
+4
+Edsger Dijkstra
+6
+Donald Knuth
+7
+Katherine Johnson
+8
+Margaret Hamilton
+9
+Tim Berners-Lee
+10
+Frances Allen
+
+query IT
+SELECT id, name FROM people WHERE id < 3 OR id > 8
+----
+1
+Ada Lovelace
+2
+Grace Hopper
+9
+Tim Berners-Lee
+10
+Frances Allen
+
+query IT
+SELECT id, name FROM people WHERE id IN (2, 4, 6)
+----
+2
+Grace Hopper
+4
+Edsger Dijkstra
+6
+Donald Knuth
+
+query IT
+SELECT id, name FROM people WHERE NOT (id = 5)
+----
+1
+Ada Lovelace
+2
+Grace Hopper
+3
+Alan Turing
+4
+Edsger Dijkstra
+6
+Donald Knuth
+7
+Katherine Johnson
+8
+Margaret Hamilton
+9
+Tim Berners-Lee
+10
+Frances Allen
+
+# Comparison against another column, not a literal.
+query IT
+SELECT id, name FROM people WHERE id < age
+----
+1
+Ada Lovelace
+2
+Grace Hopper
+3
+Alan Turing
+4
+Edsger Dijkstra
+5
+Barbara Liskov
+6
+Donald Knuth
+7
+Katherine Johnson
+8
+Margaret Hamilton
+9
+Tim Berners-Lee
+10
+Frances Allen
+
+query IT
+SELECT id, name FROM people WHERE city LIKE 'Lon%'
+----
+1
+Ada Lovelace
+3
+Alan Turing
+9
+Tim Berners-Lee
+
+# --- an index that is present but irrelevant to the predicate ---------------
+
+query TI
+SELECT name, age FROM people WHERE department = 'Research'
+----
+Alan Turing
+41
+Edsger Dijkstra
+52
+Donald Knuth
+61
+Tim Berners-Lee
+49
+
+# One indexed column constrains, another does not.
+query TI
+SELECT name, age FROM people WHERE id >= 3 AND department = 'Research'
+----
+Alan Turing
+41
+Edsger Dijkstra
+52
+Donald Knuth
+61
+Tim Berners-Lee
+49
+
+# --- row order is preserved --------------------------------------------------
+#
+# `nosort` compares row for row. An index scan gathers rows the tree named, so
+# without an explicit sort by row id it would emit them in key order -- which
+# for the text index is a completely different order from the table's. These
+# records fail loudly if that ever regresses.
+
+query IT nosort
+SELECT id, name FROM people WHERE id >= 2 AND id <= 9
+----
+2
+Grace Hopper
+3
+Alan Turing
+4
+Edsger Dijkstra
+5
+Barbara Liskov
+6
+Donald Knuth
+7
+Katherine Johnson
+8
+Margaret Hamilton
+9
+Tim Berners-Lee
+
+query IT nosort
+SELECT id, city FROM people WHERE city >= 'Cambridge' AND city <= 'Palo Alto'
+----
+1
+London
+2
+New York
+3
+London
+5
+New York
+6
+Palo Alto
+7
+Hampton
+8
+Cambridge
+9
+London
+
+query IT nosort
+SELECT id, name FROM people WHERE city = 'London'
+----
+1
+Ada Lovelace
+3
+Alan Turing
+9
+Tim Berners-Lee
+
+# --- indexes under the rest of the engine -----------------------------------
+
+query TT rowsort
+SELECT p.name, o.product FROM people p JOIN orders o ON p.id = o.person_id WHERE p.id = 1
+----
+Ada Lovelace
+keyboard
+Ada Lovelace
+laptop
+Ada Lovelace
+mouse
+
+query TI
+SELECT city, COUNT(*) FROM people WHERE id <= 6 GROUP BY city ORDER BY city
+----
+Austin
+1
+London
+2
+New York
+2
+Palo Alto
+1
+
+query IT
+SELECT id, name FROM people WHERE id >= 4 ORDER BY name LIMIT 3
+----
+5
+Barbara Liskov
+6
+Donald Knuth
+4
+Edsger Dijkstra
+
+query I
+SELECT COUNT(*) FROM people WHERE id > 3
+----
+7
+
+query I
+SELECT COUNT(*) FROM orders WHERE person_id = 1
+----
+3
+
+query IT
+SELECT id, name FROM people WHERE id IN (SELECT person_id FROM orders WHERE quantity > 2)
+----
+1
+Ada Lovelace
+2
+Grace Hopper
+8
+Margaret Hamilton
+
+# A derived table whose scan is indexed.
+query IT
+SELECT id, name FROM (SELECT * FROM people WHERE id > 5) t WHERE t.age < 50
+----
+7
+Katherine Johnson
+8
+Margaret Hamilton
+9
+Tim Berners-Lee

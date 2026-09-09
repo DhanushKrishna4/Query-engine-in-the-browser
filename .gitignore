@@ -1,0 +1,26 @@
+# Editor and tooling directories.
+.claude/
+.vscode/
+.idea/
+
+# Build output.
+/target/
+**/*.rs.bk
+
+# Produced by tools/build_web.sh: the wasm module and its glue, the sample
+# datasets copied out of data/, and sql.js fetched from a CDN. All reproducible,
+# so none of it belongs in the repository.
+/web/pkg/
+/web/data/
+/web/vendor/
+
+# Generated benchmark fixtures live outside the repo entirely (/tmp), but catch
+# them if anyone points the generator here.
+/trips.csv
+/trips*.parquet
+
+# Python bytecode from the tooling.
+__pycache__/
+*.pyc
+
+.DS_Store

@@ -1,0 +1,6 @@
+# SIMD128 is not on by default for wasm32. The kernels in expr/vector.rs are
+# written as branch-free loops over contiguous slices specifically so that LLVM
+# can vectorize them; without this flag it emits scalar wasm and the shape is
+# wasted.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]

@@ -1,0 +1,9182 @@
+# GENERATED FILE -- do not edit by hand.
+# python3 tools/fuzz_queries.py --seed 51 --count 600
+#
+# Randomized differential corpus. Expected results come from SQLite;
+# a failure here is a real semantic disagreement.
+#
+# The tables are indexed, so every query that filters on an indexed
+# column may be planned as an index scan -- a completely different
+# set of rows read, in a different way, and still checked against
+# SQLite's answer. The evaluator-agreement test runs the same corpus
+# with index scans disabled, so both paths are compared to each
+# other as well as to the oracle.
+
+load people data/people.csv
+load orders data/orders.csv
+
+index people id
+index people city
+index people score
+index orders person_id
+index orders unit_price
+
+query I nosort
+SELECT (a.department <= 'Research') FROM people a WHERE (a.active NOT IN (TRUE, FALSE)) ORDER BY 1 DESC
+----
+
+query IIITI rowsort
+SELECT a.age, a.active, MIN(a.salary), MAX(a.city), COUNT(*) FROM people a WHERE (a.id IS NULL) GROUP BY a.age, a.active
+----
+
+query T nosort
+SELECT (CASE WHEN (NOT b.active) THEN (CASE WHEN (b.hired <= '1993-04-02') THEN b.name ELSE b.city END) ELSE (CASE WHEN (b.active) THEN b.city ELSE a.department END) END) FROM people a INNER JOIN people b ON a.name = b.name WHERE (a.id BETWEEN 4 AND 10) ORDER BY 1
+----
+Austin
+Cambridge
+Frances Allen
+Hampton
+London
+New York
+Palo Alto
+
+query TT rowsort
+SELECT CAST(CAST(a.unit_price AS INT) AS TEXT), (a.product || '-' || a.product) FROM orders a WHERE (a.quantity NOT BETWEEN 2 AND 7)
+----
+1899
+laptop-laptop
+1899
+laptop-laptop
+349
+monitor-monitor
+612
+desk-desk
+7
+cable-cable
+89
+keyboard-keyboard
+
+query IT rowsort
+SELECT shipped, ordered_on FROM orders WHERE ((NOT (unit_price >= 90.99)) OR (NOT (unit_price >= 6.99))) EXCEPT SELECT shipped, ordered_on FROM orders WHERE (person_id <= 4)
+----
+0
+2024-05-30
+1
+2024-04-01
+
+query R rowsort
+SELECT unit_price FROM orders WHERE (product = 'keyboard') INTERSECT SELECT unit_price FROM orders WHERE (order_id IS NULL)
+----
+
+query TT rowsort
+SELECT department, name FROM people WHERE (id IN (6, NULL)) EXCEPT SELECT department, name FROM people WHERE (id > 4.00)
+----
+
+query IIR rowsort
+SELECT person_id, shipped, unit_price FROM orders WHERE (NOT (quantity = 3)) EXCEPT SELECT person_id, shipped, unit_price FROM orders WHERE (order_id < 1009)
+----
+1
+1
+1899.000
+10
+0
+612.000
+3
+1
+24.250
+8
+0
+7.990
+
+query ITTI nosort
+SELECT (a.hired < '1999-11-30'), a.hired, (a.name || '-' || (a.department || '-' || a.name)), SUM(a.id) OVER (ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired) FROM people a WHERE (a.active IS NOT NULL) ORDER BY 1, 2, 3, 4 DESC
+----
+NULL
+NULL
+Edsger Dijkstra-Research-Edsger Dijkstra
+10
+0
+1999-11-30
+Grace Hopper-Engineering-Grace Hopper
+3
+0
+2001-05-01
+Ada Lovelace-Engineering-Ada Lovelace
+1
+0
+2003-02-14
+Alan Turing-Research-Alan Turing
+6
+0
+2005-03-30
+Margaret Hamilton-Engineering-Margaret Hamilton
+36
+0
+2008-09-22
+Katherine Johnson-Analytics-Katherine Johnson
+28
+0
+2010-07-04
+Barbara Liskov-Engineering-Barbara Liskov
+15
+1
+1993-04-02
+Frances Allen-Analytics-Frances Allen
+55
+1
+1995-01-15
+Donald Knuth-Research-Donald Knuth
+21
+1
+1998-06-11
+Tim Berners-Lee-Research-Tim Berners-Lee
+45
+
+query IT rowsort
+SELECT a.order_id, a.product FROM orders a WHERE (a.shipped NOT IN (TRUE, FALSE))
+----
+
+query IT rowsort
+SELECT salary, city FROM people WHERE (name IS NULL) INTERSECT SELECT salary, city FROM people WHERE (NOT (id IS NULL))
+----
+
+query TR nosort
+SELECT CAST(a.age AS TEXT), LAG(b.score) OVER (PARTITION BY a.department ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired, b.id, b.name, b.age, b.city, b.department, b.salary, b.score, b.hired) FROM people a FULL JOIN people b ON a.city = b.city WHERE ((b.salary >= 142000) OR (b.department NOT LIKE '%ng')) ORDER BY 1, 2 DESC
+----
+36
+9.500
+36
+NULL
+36
+NULL
+38
+9.500
+38
+8.250
+39
+9.500
+41
+9.500
+41
+NULL
+41
+NULL
+44
+NULL
+45
+8.250
+45
+NULL
+49
+9.900
+49
+9.500
+49
+NULL
+52
+NULL
+57
+8.800
+61
+7.000
+
+query IT rowsort
+SELECT shipped, ordered_on FROM orders WHERE (quantity = 6) UNION ALL SELECT shipped, ordered_on FROM orders WHERE (((order_id <> 1005.00) AND (unit_price = 6.99)) AND (person_id IS NULL))
+----
+
+query TII rowsort
+SELECT DISTINCT b.product, (a.active <> FALSE), b.order_id FROM people a RIGHT JOIN orders b ON a.id = b.person_id WHERE (a.score BETWEEN 8.10 AND 9.50)
+----
+cable
+1
+1006
+cable
+1
+1010
+desk
+0
+1012
+desk
+1
+1004
+keyboard
+1
+1001
+keyboard
+1
+1007
+laptop
+1
+1011
+monitor
+1
+1005
+mouse
+1
+1003
+
+query TII rowsort
+SELECT department, age, salary FROM people WHERE ((id = 15) OR ((hired >= '2001-05-01') OR (age <> 57))) EXCEPT SELECT department, age, salary FROM people WHERE ((city > 'Austin') OR (city BETWEEN 'Austin' AND 'Cambridge'))
+----
+
+query ITI rowsort
+SELECT (19 / 3), b.name, (a.person_id * 37) FROM orders a RIGHT JOIN people b ON a.person_id = b.id AND (a.product NOT LIKE 'keyboard') WHERE (b.hired IN ('2010-07-04'))
+----
+6
+Barbara Liskov
+185
+
+query II rowsort
+SELECT (x.shipped <> TRUE), (x.quantity / 6) FROM (SELECT quantity, shipped FROM orders WHERE (person_id > 7)) x WHERE (x.quantity <= 3)
+----
+1
+0
+NULL
+0
+
+query ITT rowsort
+SELECT b.active, b.name, MAX(b.city) FROM people a INNER JOIN people b ON a.name = b.name GROUP BY b.active, b.name
+----
+0
+Donald Knuth
+Palo Alto
+0
+Edsger Dijkstra
+Austin
+0
+Frances Allen
+Yorktown
+1
+Ada Lovelace
+London
+1
+Alan Turing
+London
+1
+Barbara Liskov
+New York
+1
+Grace Hopper
+New York
+1
+Katherine Johnson
+Hampton
+1
+Margaret Hamilton
+Cambridge
+1
+Tim Berners-Lee
+London
+
+query I rowsort
+SELECT DISTINCT (a.department >= 'Research') FROM people a WHERE (a.id BETWEEN 0 AND 15)
+----
+0
+1
+
+query TTTT rowsort
+SELECT a.hired, a.name, MAX(a.name), MIN(a.name) FROM people a GROUP BY a.hired, a.name HAVING AVG(a.age) <> 1
+----
+1993-04-02
+Frances Allen
+Frances Allen
+Frances Allen
+1995-01-15
+Donald Knuth
+Donald Knuth
+Donald Knuth
+1998-06-11
+Tim Berners-Lee
+Tim Berners-Lee
+Tim Berners-Lee
+1999-11-30
+Grace Hopper
+Grace Hopper
+Grace Hopper
+2001-05-01
+Ada Lovelace
+Ada Lovelace
+Ada Lovelace
+2003-02-14
+Alan Turing
+Alan Turing
+Alan Turing
+2005-03-30
+Margaret Hamilton
+Margaret Hamilton
+Margaret Hamilton
+2008-09-22
+Katherine Johnson
+Katherine Johnson
+Katherine Johnson
+2010-07-04
+Barbara Liskov
+Barbara Liskov
+Barbara Liskov
+NULL
+Edsger Dijkstra
+Edsger Dijkstra
+Edsger Dijkstra
+
+query II rowsort
+SELECT DISTINCT 25, CAST(a.salary AS BIGINT) FROM people a WHERE (NOT (a.id > 10.00))
+----
+25
+142000
+25
+151000
+25
+155000
+25
+169000
+25
+176000
+25
+178000
+25
+185000
+25
+188000
+25
+192000
+25
+201000
+
+query TRR rowsort
+SELECT DISTINCT (CASE WHEN (a.department <= 'Analytics') THEN a.department ELSE a.city END), (a.age + (a.score * a.id)), a.score FROM people a WHERE (a.city <> 'Cambridge')
+----
+Analytics
+105.600
+8.800
+Analytics
+141.000
+8.400
+Austin
+80.000
+7.000
+London
+45.500
+9.500
+London
+NULL
+NULL
+New York
+61.500
+8.250
+New York
+85.500
+9.500
+Palo Alto
+120.400
+9.900
+
+query ITII nosort
+SELECT x.person_id, (x.product || '-' || x.product), x.person_id, DENSE_RANK() OVER (ORDER BY x.order_id, x.person_id, x.product) FROM (SELECT order_id, person_id, product FROM orders) x WHERE (x.order_id >= 1004.00) ORDER BY 1, 2, 3, 4
+----
+1
+laptop-laptop
+1
+8
+2
+cable-cable
+2
+3
+3
+mouse-mouse
+3
+6
+5
+keyboard-keyboard
+5
+4
+5
+monitor-monitor
+5
+2
+7
+desk-desk
+7
+1
+8
+cable-cable
+8
+7
+9
+laptop-laptop
+9
+5
+10
+desk-desk
+10
+9
+
+query T rowsort
+SELECT city FROM people WHERE (active IS NULL) UNION ALL SELECT city FROM people WHERE (active IS NOT NULL)
+----
+Austin
+Cambridge
+Hampton
+London
+London
+London
+New York
+New York
+Palo Alto
+Yorktown
+
+query TR rowsort
+SELECT (a.city || '-' || a.department), CAST((a.id + a.salary) AS FLOAT) FROM people a WHERE ((a.id NOT IN (9, 2, 5)) AND (a.city IN ('London', 'Hampton')))
+----
+Hampton-Analytics
+142007.000
+London-Engineering
+185001.000
+London-Research
+178003.000
+
+query RTI rowsort
+SELECT unit_price, ordered_on, person_id FROM orders WHERE (NOT ((quantity = 4) OR (shipped))) UNION ALL SELECT unit_price, ordered_on, person_id FROM orders WHERE (order_id <> 1506)
+----
+1899.000
+2024-04-22
+9
+1899.000
+2024-06-14
+1
+24.250
+2024-02-02
+1
+24.250
+2024-05-08
+3
+349.500
+2024-01-17
+3
+349.500
+2024-03-05
+5
+612.000
+2024-02-11
+7
+612.000
+2024-07-03
+10
+612.000
+2024-07-03
+10
+7.990
+2024-03-19
+2
+7.990
+2024-03-19
+2
+7.990
+2024-05-30
+8
+7.990
+2024-05-30
+8
+89.990
+2024-01-15
+1
+89.990
+2024-04-01
+5
+
+query TTR rowsort
+SELECT a.name, (a.hired || '!'), CAST((9 - a.score) AS FLOAT) FROM people a JOIN people b ON a.age = b.age AND (b.department < 'Engineering') WHERE (a.city <= 'Austin')
+----
+
+query ITI rowsort
+SELECT (CASE WHEN (b.department <= 'Engineering') THEN a.quantity ELSE a.quantity END), a.ordered_on, (b.score <> 8.00) FROM orders a RIGHT JOIN people b ON a.person_id = b.id WHERE (a.unit_price BETWEEN 44.99 AND 1900.00)
+----
+1
+2024-01-17
+NULL
+1
+2024-02-11
+1
+1
+2024-04-01
+1
+1
+2024-04-22
+NULL
+1
+2024-06-14
+1
+2
+2024-01-15
+1
+2
+2024-03-05
+1
+2
+2024-07-03
+1
+
+query IITI rowsort
+SELECT a.salary, a.active, MIN(a.city), SUM(DISTINCT a.salary) FROM people a WHERE (a.score IS NULL) GROUP BY a.salary, a.active
+----
+178000
+1
+London
+178000
+188000
+1
+London
+188000
+
+query II rowsort
+SELECT (a.active), a.age FROM people a LEFT JOIN orders b ON a.id = b.person_id AND (b.quantity < 1) WHERE (b.order_id >= 1010.00)
+----
+
+query TI rowsort
+SELECT MIN(a.department), COUNT(DISTINCT a.city) FROM people a WHERE (a.salary >= 178000) HAVING AVG(a.age) < 3
+----
+
+query IRRI rowsort
+SELECT a.shipped, MAX(a.unit_price), AVG(a.order_id), COUNT(DISTINCT a.product) FROM orders a WHERE ((NOT (a.quantity <> 4)) AND (a.product NOT BETWEEN 'keyboard' AND 'laptop')) GROUP BY a.shipped HAVING COUNT(*) <> 4
+----
+0
+24.250
+1003.000
+1
+
+query IIII rowsort
+SELECT a.quantity, SUM(a.order_id), SUM(a.order_id), COUNT(a.product) FROM orders a WHERE (a.shipped = FALSE) GROUP BY a.quantity
+----
+10
+1006
+1006
+1
+2
+1012
+1012
+1
+4
+1003
+1003
+1
+5
+1010
+1010
+1
+
+query R rowsort
+SELECT (a.quantity * a.unit_price) FROM orders a WHERE (NOT (a.ordered_on >= '2024-01-15'))
+----
+
+query TIIR rowsort
+SELECT a.city, MIN(a.id), MIN(a.active), AVG(a.score) FROM people a GROUP BY a.city
+----
+Austin
+4
+0
+7.000
+Cambridge
+8
+1
+9.100
+Hampton
+7
+1
+8.800
+London
+1
+1
+9.500
+New York
+2
+1
+8.875
+Palo Alto
+6
+0
+9.900
+Yorktown
+10
+0
+8.400
+
+query II nosort
+SELECT a.id, DENSE_RANK() OVER (ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired) FROM people a WHERE ((NOT (a.hired <= '2003-02-14')) AND (a.name <= 'Edsger Dijkstra')) ORDER BY 1, 2
+----
+5
+1
+
+query TIR rowsort
+SELECT a.product, COUNT(DISTINCT b.shipped), MIN(a.unit_price) FROM orders a RIGHT JOIN orders b ON a.quantity = b.quantity WHERE (a.product NOT LIKE '%it%') GROUP BY a.product
+----
+cable
+1
+7.990
+desk
+2
+612.000
+keyboard
+2
+89.990
+laptop
+1
+1899.000
+mouse
+2
+24.250
+
+query T rowsort
+SELECT (CASE WHEN (b.age > (SELECT MAX(s.unit_price) FROM orders s)) THEN a.product ELSE b.department END) FROM orders a LEFT JOIN people b ON a.person_id = b.id WHERE (NOT EXISTS (SELECT 1 FROM people s WHERE (s.id <> 1.00)))
+----
+
+query ITRRI rowsort
+SELECT a.order_id, a.product, SUM(a.unit_price), AVG(a.order_id), SUM(a.order_id) FROM orders a WHERE (NOT (a.person_id < 4)) GROUP BY a.order_id, a.product
+----
+1004
+desk
+612.000
+1004.000
+1004
+1005
+monitor
+349.500
+1005.000
+1005
+1007
+keyboard
+89.990
+1007.000
+1007
+1008
+laptop
+1899.000
+1008.000
+1008
+1010
+cable
+7.990
+1010.000
+1010
+1012
+desk
+612.000
+1012.000
+1012
+
+query III nosort
+SELECT ((a.order_id = (SELECT SUM(s.person_id) FROM orders s)) AND (a.unit_price > 612.00)), ((a.person_id * 28) + 4), (b.unit_price > 89.99) FROM orders a JOIN orders b ON a.order_id = b.order_id WHERE (a.product BETWEEN 'cable' AND 'mouse') ORDER BY 1, 2, 3
+----
+0
+32
+0
+0
+32
+0
+0
+32
+1
+0
+60
+0
+0
+88
+0
+0
+88
+1
+0
+144
+0
+0
+144
+1
+0
+200
+1
+0
+228
+0
+0
+256
+1
+0
+284
+1
+
+query IT rowsort
+SELECT (a.person_id = 1), (CASE WHEN (a.order_id < 1005) THEN a.product ELSE a.product END) FROM orders a WHERE (a.order_id BETWEEN 501 AND 1008)
+----
+0
+cable
+0
+desk
+0
+keyboard
+0
+laptop
+0
+monitor
+0
+monitor
+1
+keyboard
+1
+mouse
+
+query II rowsort
+SELECT quantity, order_id FROM orders WHERE (unit_price > 88.99) EXCEPT SELECT quantity, order_id FROM orders WHERE (order_id BETWEEN 501 AND 506)
+----
+1
+1002
+1
+1004
+1
+1007
+1
+1008
+1
+1011
+2
+1001
+2
+1005
+2
+1012
+
+query IRII nosort
+SELECT ((a.person_id * a.order_id) / 6), (CAST(a.person_id AS FLOAT) + CAST(a.unit_price AS FLOAT)), ((a.quantity * 48) * a.order_id), LAG(a.quantity) OVER (PARTITION BY a.product ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE (a.ordered_on IN ('2024-07-03', '2024-05-30', '2024-06-14')) ORDER BY 1, 2, 3, 4 DESC
+----
+168
+1900.000
+48528
+NULL
+1346
+15.990
+242400
+NULL
+1686
+622.000
+97152
+NULL
+
+query IIII nosort
+SELECT x.id, x.id, (x.id * 13), DENSE_RANK() OVER (ORDER BY x.id, x.hired, x.city, x.name) FROM (SELECT id, hired, city, name FROM people WHERE ((age <= 62.00) OR (salary < 155000))) x WHERE (x.city <> 'London') ORDER BY 1, 2, 3, 4
+----
+2
+2
+26
+1
+4
+4
+52
+2
+5
+5
+65
+3
+6
+6
+78
+4
+7
+7
+91
+5
+8
+8
+104
+6
+10
+10
+130
+7
+
+query IIT nosort
+SELECT (a.name LIKE '%ov'), ((a.id = 3) AND (a.salary <= 89000.00)), a.hired FROM people a WHERE (NOT EXISTS (SELECT 1 FROM orders s WHERE (s.order_id < 1003))) ORDER BY 1, 2, 3 DESC
+----
+
+query TIR rowsort
+SELECT name, salary, score FROM people WHERE (department > 'Research') INTERSECT SELECT name, salary, score FROM people WHERE (salary IS NULL)
+----
+
+query IR rowsort
+SELECT a.id, AVG(a.score) FROM people a FULL JOIN people b ON a.name = b.name GROUP BY a.id HAVING COUNT(*) < 1
+----
+
+query IIT nosort
+SELECT DISTINCT (b.city LIKE '___%'), (26 + b.id), CAST(21 AS TEXT) FROM orders a JOIN people b ON a.person_id = b.id WHERE (b.id <> 11) ORDER BY 1, 2, 3
+----
+1
+27
+21
+1
+28
+21
+1
+29
+21
+1
+31
+21
+1
+33
+21
+1
+34
+21
+1
+35
+21
+1
+36
+21
+
+query T rowsort
+SELECT department FROM people WHERE (NOT (age NOT IN (44, NULL))) INTERSECT SELECT department FROM people WHERE (salary >= 185001.00)
+----
+
+query TI rowsort
+SELECT MAX(a.department), COUNT(a.age) FROM people a HAVING COUNT(a.active) < 1
+----
+
+query I rowsort
+SELECT DISTINCT (a.person_id >= 1) FROM orders a WHERE (a.quantity NOT BETWEEN 2 AND 5)
+----
+1
+
+query I rowsort
+SELECT (a.age <= 28.50) FROM people a WHERE (a.age <= 48.00)
+----
+0
+0
+0
+0
+0
+0
+
+query TII rowsort
+SELECT a.name, SUM(a.age), SUM(a.id) FROM people a GROUP BY a.name HAVING COUNT(DISTINCT a.id) > 4
+----
+
+query T rowsort
+SELECT name FROM people WHERE (id < 6) INTERSECT SELECT name FROM people WHERE (NOT (city BETWEEN 'New York' AND 'Yorktown'))
+----
+Ada Lovelace
+Alan Turing
+Edsger Dijkstra
+
+query TTR rowsort
+SELECT product, ordered_on, unit_price FROM orders WHERE (ordered_on <= '2024-06-14') INTERSECT SELECT product, ordered_on, unit_price FROM orders WHERE ((unit_price BETWEEN 612.00 AND 2848.50) OR (order_id <> 1003.00))
+----
+cable
+2024-03-19
+7.990
+cable
+2024-05-30
+7.990
+desk
+2024-02-11
+612.000
+keyboard
+2024-01-15
+89.990
+keyboard
+2024-04-01
+89.990
+laptop
+2024-04-22
+1899.000
+laptop
+2024-06-14
+1899.000
+monitor
+2024-01-17
+349.500
+monitor
+2024-03-05
+349.500
+mouse
+2024-05-08
+24.250
+
+query IT rowsort
+SELECT (x.order_id NOT IN (1012, 1004, 1002)), 'x' FROM (SELECT quantity, order_id, unit_price FROM orders) x WHERE ((x.order_id BETWEEN 1001 AND 1507) AND (x.unit_price >= 174.75))
+----
+0
+x
+0
+x
+0
+x
+1
+x
+1
+x
+1
+x
+
+query II nosort
+SELECT x.person_id, RANK() OVER (PARTITION BY x.product ORDER BY x.product, x.person_id) FROM (SELECT product, person_id FROM orders WHERE (quantity >= 2)) x WHERE (NOT (x.product BETWEEN 'laptop' AND 'mouse')) ORDER BY 1, 2
+----
+1
+1
+2
+1
+8
+2
+10
+1
+
+query T rowsort
+SELECT ordered_on FROM orders WHERE (NOT (NOT (person_id > 2.00))) UNION SELECT ordered_on FROM orders WHERE (order_id IN (1004, 1012, 1009))
+----
+2024-01-17
+2024-02-11
+2024-03-05
+2024-04-01
+2024-04-22
+2024-05-08
+2024-05-30
+2024-07-03
+
+query I rowsort
+SELECT 45 FROM (SELECT name, hired FROM people WHERE (salary IS NULL)) x WHERE ((x.hired IN ('2010-07-04')) OR (x.hired NOT BETWEEN '1999-11-30' AND '2008-09-22'))
+----
+
+query II rowsort
+SELECT (a.ordered_on < '2024-01-17'), 10 FROM orders a WHERE ((a.ordered_on NOT IN ('2024-05-30')) AND (a.order_id >= 1010.00))
+----
+0
+10
+0
+10
+
+query IT rowsort
+SELECT active, department FROM people WHERE (city IS NULL) EXCEPT SELECT active, department FROM people WHERE (salary > 188001.00)
+----
+
+query III rowsort
+SELECT DISTINCT a.quantity, 45, CAST(a.quantity AS INT) FROM orders a WHERE (a.unit_price >= 612.00)
+----
+1
+45
+1
+2
+45
+2
+
+query I rowsort
+SELECT SUM(a.age) FROM people a WHERE (a.active <> FALSE) HAVING COUNT(*) >= 2
+----
+292
+
+query R nosort
+SELECT a.score FROM people a WHERE (a.hired IN ('1999-11-30', NULL)) ORDER BY 1 DESC
+----
+8.250
+
+query T rowsort
+SELECT (CASE WHEN ((x.age <> 61) OR (x.department LIKE '%ar%')) THEN (CASE WHEN (x.active <> FALSE) THEN x.department ELSE x.department END) ELSE (x.department || '-' || x.department) END) FROM (SELECT department, active, age FROM people WHERE (salary IS NULL)) x WHERE (x.active = FALSE)
+----
+
+query II nosort
+SELECT (a.shipped = FALSE), COUNT(*) OVER (PARTITION BY a.shipped ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE (a.person_id NOT IN (3, 1)) ORDER BY 1, 2
+----
+NULL
+1
+0
+1
+0
+2
+0
+3
+1
+1
+1
+2
+1
+3
+
+query II nosort
+SELECT (a.city > 'Hampton'), 5 FROM people a RIGHT JOIN orders b ON a.id = b.person_id WHERE ((b.order_id = 1001) OR (a.age <= 41)) ORDER BY 1, 2
+----
+0
+5
+1
+5
+1
+5
+1
+5
+1
+5
+1
+5
+1
+5
+1
+5
+
+query IR nosort
+SELECT (a.order_id * b.order_id), CAST(a.unit_price AS FLOAT) FROM orders a INNER JOIN orders b ON a.person_id = b.person_id WHERE (b.shipped IN (FALSE)) ORDER BY 1, 2
+----
+1004003
+89.990
+1006009
+24.250
+1012036
+7.990
+1014033
+1899.000
+1020100
+7.990
+1024144
+612.000
+
+query ITIR rowsort
+SELECT a.id, b.department, COUNT(*), AVG(a.salary) FROM people a INNER JOIN people b ON a.city = b.city AND (a.name <= 'Ada Lovelace') GROUP BY a.id, b.department HAVING AVG(b.score) < 4
+----
+
+query T rowsort
+SELECT MAX(a.hired) FROM people a RIGHT JOIN people b ON a.age = b.age AND (b.age <= 44) WHERE ((b.city >= 'Austin') OR (a.score <= 9.50)) HAVING COUNT(a.score) <> 3
+----
+2010-07-04
+
+query ITT nosort
+SELECT (a.product IN ('laptop', 'desk', 'cable')), a.product, a.product FROM orders a WHERE (NOT a.shipped) ORDER BY 1, 2, 3
+----
+0
+mouse
+mouse
+1
+cable
+cable
+1
+cable
+cable
+1
+desk
+desk
+
+query IIIR rowsort
+SELECT a.order_id, SUM(a.order_id), MAX(a.quantity), MIN(a.unit_price) FROM orders a WHERE (a.order_id >= 1516.50) GROUP BY a.order_id HAVING COUNT(DISTINCT a.shipped) <> 2
+----
+
+query IIR nosort
+SELECT (CAST(a.id AS BIGINT) / 5), CAST((a.salary - 39) AS BIGINT), a.score FROM people a WHERE (a.age IN (52, 61)) ORDER BY 1, 2, 3
+----
+0
+168961
+7.000
+1
+154961
+9.900
+
+query I rowsort
+SELECT 6 FROM people a WHERE (NOT (a.city >= 'Yorktown'))
+----
+6
+6
+6
+6
+6
+6
+6
+6
+6
+
+query R rowsort
+SELECT CAST((CASE WHEN (b.product >= 'monitor') THEN b.quantity ELSE a.salary END) AS FLOAT) FROM people a RIGHT JOIN orders b ON a.id = b.person_id WHERE (b.person_id >= (SELECT AVG(s.age) FROM people s))
+----
+
+query TTII rowsort
+SELECT b.city, a.product, COUNT(b.active), SUM(b.salary) FROM orders a INNER JOIN people b ON a.person_id = b.id WHERE (a.ordered_on IN (SELECT s.hired FROM people s WHERE (s.score NOT IN (9.10, 8.40)))) GROUP BY b.city, a.product
+----
+
+query IT nosort
+SELECT (41 / 7), (a.department || '-' || a.department) FROM people a WHERE (a.hired BETWEEN '2001-05-01' AND '2005-03-30') ORDER BY 1, 2
+----
+5
+Engineering-Engineering
+5
+Engineering-Engineering
+5
+Research-Research
+
+query IIT nosort
+SELECT ((CASE WHEN (a.unit_price = (SELECT MIN(s.person_id) FROM orders s)) THEN a.person_id ELSE a.quantity END) / 6), (a.product IN ('mouse', 'monitor', NULL)), (CASE WHEN (a.order_id <> 1506) THEN a.product ELSE a.product END) FROM orders a WHERE ((NOT (a.person_id NOT IN (5))) OR (a.person_id = 2)) ORDER BY 1, 2, 3
+----
+0
+NULL
+keyboard
+0
+1
+monitor
+1
+NULL
+cable
+
+query III rowsort
+SELECT MIN(a.order_id), COUNT(a.product), MIN(a.quantity) FROM orders a HAVING COUNT(DISTINCT a.unit_price) <= 1
+----
+
+query II nosort
+SELECT (CASE WHEN (a.order_id > 505) THEN a.person_id ELSE a.person_id END), RANK() OVER (PARTITION BY a.product ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE (a.person_id IS NULL) ORDER BY 1, 2 DESC
+----
+
+query TTI rowsort
+SELECT a.hired, a.city, SUM(DISTINCT a.age) FROM people a WHERE (a.active IS NOT NULL) GROUP BY a.hired, a.city HAVING COUNT(*) = 3
+----
+
+query II nosort
+SELECT (a.person_id <= 11), (a.order_id / 8) FROM orders a WHERE (((a.ordered_on > '2024-07-03') AND (a.order_id >= 1009.00)) AND (a.quantity IS NOT NULL)) ORDER BY 1, 2
+----
+
+query RII rowsort
+SELECT (CASE WHEN ((a.salary = (SELECT COUNT(s.unit_price) FROM orders s)) AND (a.age > 57.00)) THEN CAST((47 * a.salary) AS FLOAT) ELSE (a.salary + a.score) END), 8, (CAST(a.id AS BIGINT) - (a.age - a.age)) FROM people a WHERE (a.department IS NOT NULL)
+----
+142008.800
+8
+7
+151008.400
+8
+10
+155009.900
+8
+6
+169007.000
+8
+4
+176009.100
+8
+8
+185009.500
+8
+1
+192008.250
+8
+2
+201009.500
+8
+5
+NULL
+8
+3
+NULL
+8
+9
+
+query TII rowsort
+SELECT a.city, MAX(a.salary), MAX(a.age) FROM people a GROUP BY a.city
+----
+Austin
+169000
+52
+Cambridge
+176000
+39
+Hampton
+142000
+44
+London
+188000
+49
+New York
+201000
+45
+Palo Alto
+155000
+61
+Yorktown
+151000
+57
+
+query R rowsort
+SELECT score FROM people WHERE ((department <= 'Analytics') AND (department LIKE 'Research')) UNION ALL SELECT score FROM people WHERE (city < 'Cambridge')
+----
+7.000
+
+query ITI rowsort
+SELECT (x.active = TRUE), 'x', x.id FROM (SELECT hired, id, salary, active FROM people WHERE ((department >= 'Engineering') OR (city = 'Austin'))) x WHERE (x.id < 6)
+----
+0
+x
+4
+1
+x
+1
+1
+x
+2
+1
+x
+3
+1
+x
+5
+
+query IT rowsort
+SELECT (a.id NOT IN (7, 6)), a.city FROM people a WHERE (a.hired NOT BETWEEN '2003-02-14' AND '2008-09-22')
+----
+0
+Palo Alto
+1
+London
+1
+London
+1
+New York
+1
+New York
+1
+Yorktown
+
+query TI rowsort
+SELECT CAST(CAST((CASE WHEN (NOT a.shipped) THEN CAST(b.order_id AS FLOAT) ELSE b.unit_price END) AS INT) AS TEXT), (a.quantity / 2) FROM orders a LEFT JOIN orders b ON a.quantity = b.quantity WHERE ((a.product NOT BETWEEN 'keyboard' AND 'laptop') OR (b.person_id > 5.00))
+----
+1001
+1
+1003
+2
+1005
+1
+1006
+5
+1009
+1
+1010
+2
+1012
+1
+1899
+0
+1899
+0
+1899
+0
+1899
+0
+1899
+0
+1899
+0
+1899
+0
+24
+1
+24
+1
+349
+0
+349
+0
+349
+1
+349
+1
+612
+0
+612
+0
+612
+0
+612
+0
+612
+0
+612
+1
+612
+1
+612
+1
+89
+0
+89
+0
+89
+1
+89
+1
+
+query TIIR rowsort
+SELECT a.department, COUNT(*), MAX(a.active), AVG(a.age) FROM people a WHERE (a.id NOT IN (6)) GROUP BY a.department
+----
+Analytics
+2
+1
+50.500
+Engineering
+4
+1
+39.500
+Research
+3
+1
+47.333
+
+query II rowsort
+SELECT (40 + 40), ((a.product < 'mouse') AND (a.person_id >= 3.00)) FROM orders a WHERE ((a.unit_price NOT IN (SELECT s.score FROM people s WHERE (s.score NOT IN (9.90, 8.80, 7.00)))) OR (NOT ((a.shipped) OR (a.shipped = TRUE))))
+----
+80
+0
+80
+0
+80
+0
+80
+0
+80
+0
+80
+1
+80
+1
+80
+1
+80
+1
+80
+1
+80
+1
+80
+1
+
+query I rowsort
+SELECT (a.order_id - a.quantity) FROM orders a FULL JOIN orders b ON a.product = b.product WHERE (NOT (a.ordered_on = '2024-07-03'))
+----
+1001
+1001
+1003
+1003
+1003
+1003
+1005
+1005
+1006
+1006
+1007
+1007
+1007
+1007
+1010
+1010
+996
+996
+999
+999
+999
+999
+
+query I rowsort
+SELECT (x.active <> TRUE) FROM (SELECT age, active, salary, city FROM people WHERE ((age = 44) OR (score <= 14.25))) x WHERE (x.age >= 37)
+----
+0
+0
+0
+0
+1
+1
+1
+
+query IIIT rowsort
+SELECT b.quantity, SUM(a.quantity), COUNT(*), MAX(a.product) FROM orders a INNER JOIN orders b ON a.order_id = b.order_id WHERE (b.person_id IN (10, 9, 3, NULL)) GROUP BY b.quantity
+----
+1
+2
+2
+monitor
+2
+4
+2
+mouse
+
+query I rowsort
+SELECT (a.name IS NOT NULL) FROM people a WHERE (NOT (NOT ((a.name LIKE '___%') OR (a.name LIKE 'Do%'))))
+----
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+
+query III rowsort
+SELECT CAST(a.id AS BIGINT), (a.city <= 'New York'), (a.city < 'London') FROM people a WHERE (a.score NOT BETWEEN 8.25 AND 9.90)
+----
+4
+1
+1
+
+query II nosort
+SELECT a.age, CAST(a.age AS BIGINT) FROM people a LEFT JOIN orders b ON a.id = b.person_id WHERE ((a.salary <= 169000) OR (b.product < 'laptop')) ORDER BY 1, 2
+----
+36
+36
+38
+38
+39
+39
+44
+44
+45
+45
+52
+52
+57
+57
+61
+61
+
+query RIT nosort
+SELECT (a.score + a.id), a.id, (CASE WHEN (a.salary <= 94000.00) THEN a.department ELSE a.name END) FROM people a WHERE (a.score IN (SELECT s.unit_price FROM orders s WHERE (s.product BETWEEN 'keyboard' AND 'laptop') AND s.person_id = a.id)) ORDER BY 1, 2, 3
+----
+
+query TII rowsort
+SELECT a.department, a.id, COUNT(*) FROM people a GROUP BY a.department, a.id
+----
+Analytics
+10
+1
+Analytics
+7
+1
+Engineering
+1
+1
+Engineering
+2
+1
+Engineering
+5
+1
+Engineering
+8
+1
+Research
+3
+1
+Research
+4
+1
+Research
+6
+1
+Research
+9
+1
+
+query III nosort
+SELECT b.age, (b.id - 9), (CASE WHEN (b.score BETWEEN 3.50 AND 10.50) THEN a.salary ELSE a.id END) FROM people a RIGHT JOIN people b ON a.age = b.age AND (b.age <= 45) WHERE (NOT (a.name > 'Grace Hopper')) ORDER BY 1, 2, 3
+----
+36
+-8
+185000
+38
+-4
+201000
+41
+-6
+3
+45
+-7
+192000
+
+query RTT rowsort
+SELECT score, hired, name FROM people WHERE (city BETWEEN 'Cambridge' AND 'Hampton') UNION SELECT score, hired, name FROM people WHERE (NOT (age > 61))
+----
+7.000
+NULL
+Edsger Dijkstra
+8.250
+1999-11-30
+Grace Hopper
+8.400
+1993-04-02
+Frances Allen
+8.800
+2008-09-22
+Katherine Johnson
+9.100
+2005-03-30
+Margaret Hamilton
+9.500
+2001-05-01
+Ada Lovelace
+9.500
+2010-07-04
+Barbara Liskov
+9.900
+1995-01-15
+Donald Knuth
+NULL
+1998-06-11
+Tim Berners-Lee
+NULL
+2003-02-14
+Alan Turing
+
+query TRIR rowsort
+SELECT a.hired, MIN(a.score), COUNT(*), SUM(a.score) FROM people a GROUP BY a.hired HAVING COUNT(*) <= 2
+----
+1993-04-02
+8.400
+1
+8.400
+1995-01-15
+9.900
+1
+9.900
+1998-06-11
+NULL
+1
+NULL
+1999-11-30
+8.250
+1
+8.250
+2001-05-01
+9.500
+1
+9.500
+2003-02-14
+NULL
+1
+NULL
+2005-03-30
+9.100
+1
+9.100
+2008-09-22
+8.800
+1
+8.800
+2010-07-04
+9.500
+1
+9.500
+NULL
+7.000
+1
+7.000
+
+query ITI nosort
+SELECT (a.quantity <= 2), CAST(35 AS TEXT), COUNT(*) OVER (PARTITION BY a.order_id ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE (a.quantity = 10) ORDER BY 1, 2, 3
+----
+0
+35
+1
+
+query II rowsort
+SELECT (a.ordered_on = '2024-03-19'), (a.ordered_on <> '2024-02-11') FROM orders a WHERE (a.order_id <= 1002)
+----
+0
+1
+0
+1
+
+query TIT rowsort
+SELECT b.city, (a.unit_price >= 174.75), (b.city || '-' || b.city) FROM orders a FULL JOIN people b ON a.person_id = b.id AND (b.score > 14.25) WHERE (b.city BETWEEN 'Cambridge' AND 'Hampton')
+----
+Cambridge
+NULL
+Cambridge-Cambridge
+Hampton
+NULL
+Hampton-Hampton
+
+query T rowsort
+SELECT a.hired FROM people a WHERE (a.age BETWEEN 57 AND 60)
+----
+1993-04-02
+
+query RTT rowsort
+SELECT DISTINCT (x.score - x.id), x.department, CAST(CAST(x.score AS INT) AS TEXT) FROM (SELECT department, hired, score, id FROM people) x WHERE (x.id IN (7, 9, 1))
+----
+1.800
+Analytics
+8
+8.500
+Engineering
+9
+NULL
+Research
+NULL
+
+query TII rowsort
+SELECT (a.name || '-' || a.name), a.age, CAST(a.age AS INT) FROM people a WHERE (a.city LIKE 'Hampton')
+----
+Katherine Johnson-Katherine Johnson
+44
+44
+
+query T nosort
+SELECT CAST(x.salary AS TEXT) FROM (SELECT salary, name, department, active FROM people WHERE (name IS NOT NULL)) x WHERE (x.department IN ('Engineering', 'Analytics', 'Research')) ORDER BY 1
+----
+142000
+151000
+155000
+169000
+176000
+178000
+185000
+188000
+192000
+201000
+
+query TTI rowsort
+SELECT product, ordered_on, shipped FROM orders WHERE (product IN ('keyboard', 'mouse')) INTERSECT SELECT product, ordered_on, shipped FROM orders WHERE (((person_id > 4) OR (order_id <= 1005)) AND (order_id = 1005))
+----
+
+query IIT rowsort
+SELECT DISTINCT a.id, ((a.id - 21) / 3), a.city FROM people a WHERE (a.department NOT BETWEEN 'Analytics' AND 'Engineering')
+----
+3
+-6
+London
+4
+-5
+Austin
+6
+-5
+Palo Alto
+9
+-4
+London
+
+query ITI rowsort
+SELECT a.quantity, MIN(a.ordered_on), MIN(a.person_id) FROM orders a WHERE (a.quantity > 2) GROUP BY a.quantity HAVING SUM(DISTINCT a.quantity) <> 1
+----
+10
+2024-03-19
+2
+4
+2024-02-02
+1
+5
+2024-05-30
+8
+
+query R rowsort
+SELECT (CASE WHEN (x.unit_price >= 349.50) THEN CAST((x.person_id * x.person_id) AS FLOAT) ELSE x.unit_price END) FROM (SELECT unit_price, person_id, shipped FROM orders WHERE (order_id <= 1004)) x WHERE ((x.person_id > 9) OR (x.shipped = FALSE))
+----
+24.250
+
+query I rowsort
+SELECT order_id FROM orders WHERE (quantity = 2.00) INTERSECT SELECT order_id FROM orders WHERE (order_id BETWEEN 1003 AND 1005)
+----
+1005
+
+query TI rowsort
+SELECT a.name, SUM(a.age) FROM people a GROUP BY a.name HAVING SUM(a.age) > 3
+----
+Ada Lovelace
+36
+Alan Turing
+41
+Barbara Liskov
+38
+Donald Knuth
+61
+Edsger Dijkstra
+52
+Frances Allen
+57
+Grace Hopper
+45
+Katherine Johnson
+44
+Margaret Hamilton
+39
+Tim Berners-Lee
+49
+
+query RII rowsort
+SELECT unit_price, person_id, quantity FROM orders WHERE (person_id BETWEEN 2 AND 9) INTERSECT SELECT unit_price, person_id, quantity FROM orders WHERE (person_id BETWEEN 3 AND 10)
+----
+1899.000
+9
+1
+24.250
+3
+2
+349.500
+3
+1
+349.500
+5
+2
+612.000
+7
+1
+7.990
+8
+5
+89.990
+5
+1
+
+query TII rowsort
+SELECT b.department, COUNT(*), SUM(b.id) FROM orders a RIGHT JOIN people b ON a.person_id = b.id AND (a.quantity <> 4) WHERE ((b.active <> FALSE) AND (b.active <> TRUE)) GROUP BY b.department
+----
+
+query TIIR rowsort
+SELECT a.department, COUNT(a.city), COUNT(a.salary), AVG(a.salary) FROM people a WHERE (a.hired >= '1999-11-30') GROUP BY a.department
+----
+Analytics
+1
+1
+142000.000
+Engineering
+4
+4
+188500.000
+Research
+1
+1
+178000.000
+
+query IIII rowsort
+SELECT a.order_id, COUNT(a.shipped), COUNT(DISTINCT b.name), MAX(b.id) FROM orders a JOIN people b ON a.person_id = b.id AND (a.quantity = 4) WHERE (b.id < 3.00) GROUP BY a.order_id
+----
+1003
+1
+1
+1
+
+query II rowsort
+SELECT 46, 5 FROM (SELECT age, salary FROM people WHERE (score = 7.00)) x WHERE (x.age NOT IN (61, 39, 45, NULL))
+----
+
+query TI nosort
+SELECT a.product, RANK() OVER (ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE ((a.person_id > 2) AND (a.order_id >= 1007.00)) ORDER BY 1, 2
+----
+cable
+4
+desk
+5
+keyboard
+1
+laptop
+2
+mouse
+3
+
+query TTIR rowsort
+SELECT a.product, MIN(a.ordered_on), COUNT(a.product), MAX(a.unit_price) FROM orders a WHERE (((a.ordered_on = '2024-02-11') OR (a.ordered_on = '2024-04-22')) OR (a.shipped = TRUE)) GROUP BY a.product
+----
+desk
+2024-02-11
+1
+612.000
+keyboard
+2024-01-15
+2
+89.990
+laptop
+2024-04-22
+2
+1899.000
+monitor
+2024-01-17
+2
+349.500
+mouse
+2024-05-08
+1
+24.250
+
+query III rowsort
+SELECT a.active, COUNT(DISTINCT a.city), SUM(a.salary) FROM people a GROUP BY a.active
+----
+0
+3
+475000
+1
+4
+1262000
+
+query TT rowsort
+SELECT a.department, (a.hired || '!') FROM people a WHERE (a.city IN ('Hampton', 'Cambridge'))
+----
+Analytics
+2008-09-22!
+Engineering
+2005-03-30!
+
+query II nosort
+SELECT (b.salary <= 89000.00), COUNT(*) OVER (ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired, b.id, b.name, b.age, b.city, b.department, b.salary, b.score, b.hired) FROM people a FULL JOIN people b ON a.salary = b.salary WHERE (b.active IS NOT NULL) ORDER BY 1, 2
+----
+0
+1
+0
+2
+0
+3
+0
+4
+0
+5
+0
+6
+0
+7
+0
+8
+0
+9
+0
+10
+
+query RI rowsort
+SELECT SUM(a.unit_price), SUM(a.order_id) FROM orders a
+----
+5965.460
+12078
+
+query TITI nosort
+SELECT a.city, a.id, (a.department || '-' || a.city), ROW_NUMBER() OVER (PARTITION BY a.id ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired) FROM people a WHERE (a.name <> 'Margaret Hamilton') ORDER BY 1, 2, 3, 4
+----
+Austin
+4
+Research-Austin
+1
+Hampton
+7
+Analytics-Hampton
+1
+London
+1
+Engineering-London
+1
+London
+3
+Research-London
+1
+London
+9
+Research-London
+1
+New York
+2
+Engineering-New York
+1
+New York
+5
+Engineering-New York
+1
+Palo Alto
+6
+Research-Palo Alto
+1
+Yorktown
+10
+Analytics-Yorktown
+1
+
+query RI rowsort
+SELECT MIN(a.unit_price), SUM(a.person_id) FROM orders a HAVING COUNT(a.shipped) > 1
+----
+7.990
+55
+
+query ITRI rowsort
+SELECT a.id, MAX(a.city), AVG(a.salary), SUM(a.age) FROM people a WHERE (NOT (a.department LIKE '___%')) GROUP BY a.id HAVING COUNT(DISTINCT a.id) <= 4
+----
+
+query IRII rowsort
+SELECT b.quantity, AVG(a.person_id), COUNT(*), MIN(b.shipped) FROM orders a LEFT JOIN orders b ON a.product = b.product WHERE (a.unit_price BETWEEN 174.75 AND 2848.50) GROUP BY b.quantity
+----
+1
+5.625
+8
+1
+2
+6.250
+4
+0
+
+query TTI rowsort
+SELECT city, department, id FROM people WHERE (city < 'Hampton') EXCEPT SELECT city, department, id FROM people WHERE (city NOT BETWEEN 'Hampton' AND 'Palo Alto')
+----
+
+query RTR rowsort
+SELECT DISTINCT a.unit_price, (a.ordered_on || '!'), (45 - a.unit_price) FROM orders a WHERE (a.shipped <> FALSE)
+----
+1899.000
+2024-06-14!
+-1854.000
+24.250
+2024-05-08!
+20.750
+349.500
+2024-01-17!
+-304.500
+349.500
+2024-03-05!
+-304.500
+612.000
+2024-02-11!
+-567.000
+89.990
+2024-01-15!
+-44.990
+89.990
+2024-04-01!
+-44.990
+
+query III rowsort
+SELECT CAST(x.score AS BIGINT), 36, (x.id - x.id) FROM (SELECT id, score, active FROM people WHERE (NOT active)) x WHERE ((x.score = 13.20) AND (x.score <= 4.55))
+----
+
+query TII nosort
+SELECT a.product, a.order_id, LAG(a.person_id) OVER (ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE ((a.person_id BETWEEN 0 AND 10) OR (a.ordered_on IS NULL)) ORDER BY 1, 2, 3 DESC
+----
+cable
+1006
+5
+cable
+1010
+3
+desk
+1004
+1
+desk
+1012
+1
+keyboard
+1001
+NULL
+keyboard
+1007
+2
+laptop
+1008
+5
+laptop
+1011
+8
+monitor
+1002
+1
+monitor
+1005
+7
+mouse
+1003
+3
+mouse
+1009
+9
+
+query IRR rowsort
+SELECT COUNT(DISTINCT a.unit_price), AVG(a.order_id), AVG(a.unit_price) FROM orders a WHERE (a.unit_price BETWEEN 348.50 AND 349.50) HAVING COUNT(*) = 2
+----
+1
+1003.500
+349.500
+
+query III nosort
+SELECT (x.department > 'Engineering'), (x.age * (x.age / 7)), (x.age < 19.50) FROM (SELECT age, department FROM people WHERE ((id > 13) AND (salary < 226500))) x WHERE (NOT (x.department IS NULL)) ORDER BY 1, 2, 3
+----
+
+query TTIT rowsort
+SELECT a.hired, MAX(a.department), SUM(a.salary), MIN(a.department) FROM people a WHERE (a.id BETWEEN 3 AND 7) GROUP BY a.hired
+----
+1995-01-15
+Research
+155000
+Research
+2003-02-14
+Research
+178000
+Research
+2008-09-22
+Analytics
+142000
+Analytics
+2010-07-04
+Engineering
+201000
+Engineering
+NULL
+Research
+169000
+Research
+
+query RTR rowsort
+SELECT AVG(a.unit_price), MIN(a.ordered_on), AVG(a.person_id) FROM orders a WHERE ((a.ordered_on NOT IN ('2024-06-14', '2024-03-19', '2024-02-11', NULL)) OR ((a.order_id > 1012.00) AND (a.shipped <> TRUE))) HAVING COUNT(*) = 4
+----
+
+query II rowsort
+SELECT CAST(a.salary AS BIGINT), a.salary FROM people a WHERE ((a.id = 2) OR (a.salary <= 75500))
+----
+192000
+192000
+
+query I rowsort
+SELECT DISTINCT (x.age / 8) FROM (SELECT age, department, name FROM people) x WHERE (NOT (x.department > 'Engineering'))
+----
+4
+5
+7
+
+query TIT rowsort
+SELECT hired, salary, name FROM people WHERE (id <= 2.00) INTERSECT SELECT hired, salary, name FROM people WHERE (id NOT BETWEEN 1 AND 9)
+----
+
+query TITIR rowsort
+SELECT a.product, a.person_id, MAX(a.ordered_on), MIN(a.shipped), AVG(a.unit_price) FROM orders a WHERE ((a.shipped = FALSE) AND (a.ordered_on > '2024-02-02')) GROUP BY a.product, a.person_id
+----
+cable
+2
+2024-03-19
+0
+7.990
+cable
+8
+2024-05-30
+0
+7.990
+desk
+10
+2024-07-03
+0
+612.000
+
+query RRT nosort
+SELECT ((x.unit_price * x.unit_price) + (x.order_id * 2)), (CASE WHEN (x.ordered_on < '2024-03-19') THEN x.unit_price ELSE x.unit_price END), 'x' FROM (SELECT order_id, ordered_on, unit_price FROM orders WHERE (unit_price BETWEEN 4.00 AND 1898.00)) x WHERE (x.unit_price NOT IN (612.00, 1899.00)) ORDER BY 1, 2, 3
+----
+2075.840
+7.990
+x
+2083.840
+7.990
+x
+2594.062
+24.250
+x
+2606.062
+24.250
+x
+10100.200
+89.990
+x
+10112.200
+89.990
+x
+124154.250
+349.500
+x
+124160.250
+349.500
+x
+
+query TIII rowsort
+SELECT a.product, a.order_id, MAX(a.quantity), MAX(a.shipped) FROM orders a WHERE (a.person_id = (SELECT COUNT(s.age) FROM people s)) GROUP BY a.product, a.order_id HAVING COUNT(*) = 1
+----
+desk
+1012
+2
+0
+
+query RII rowsort
+SELECT CAST(a.quantity AS FLOAT), a.quantity, CAST(a.order_id AS INT) FROM orders a WHERE (a.product IS NULL)
+----
+
+query IRT rowsort
+SELECT a.id, ((CASE WHEN (a.department LIKE '___%') THEN a.score ELSE CAST(a.age AS FLOAT) END) - CAST(a.salary AS FLOAT)), a.hired FROM people a WHERE ((a.score <= 9.10) OR (a.salary < 77500))
+----
+10
+-150991.600
+1993-04-02
+2
+-191991.750
+1999-11-30
+4
+-168993.000
+NULL
+7
+-141991.200
+2008-09-22
+8
+-175990.900
+2005-03-30
+
+query IT rowsort
+SELECT a.salary, (a.city || '-' || a.department) FROM people a WHERE (a.score <= 10.90)
+----
+142000
+Hampton-Analytics
+151000
+Yorktown-Analytics
+155000
+Palo Alto-Research
+169000
+Austin-Research
+176000
+Cambridge-Engineering
+185000
+London-Engineering
+192000
+New York-Engineering
+201000
+New York-Engineering
+
+query T rowsort
+SELECT hired FROM people WHERE (name NOT LIKE 'Ad%') UNION ALL SELECT hired FROM people WHERE (score BETWEEN 4.75 AND 8.25)
+----
+1993-04-02
+1995-01-15
+1998-06-11
+1999-11-30
+1999-11-30
+2003-02-14
+2005-03-30
+2008-09-22
+2010-07-04
+NULL
+NULL
+
+query IT rowsort
+SELECT age, city FROM people WHERE (hired >= '2005-03-30') UNION ALL SELECT age, city FROM people WHERE (city < 'London')
+----
+38
+New York
+39
+Cambridge
+39
+Cambridge
+44
+Hampton
+44
+Hampton
+52
+Austin
+
+query TIII rowsort
+SELECT a.department, COUNT(*), COUNT(*), SUM(a.id) FROM people a WHERE (NOT (a.id NOT IN (9, 5, NULL))) GROUP BY a.department
+----
+Engineering
+1
+1
+5
+Research
+1
+1
+9
+
+query IIT rowsort
+SELECT a.quantity, (a.order_id / 3), a.product FROM orders a WHERE (a.shipped IS NOT NULL)
+----
+1
+334
+desk
+1
+334
+monitor
+1
+335
+keyboard
+1
+337
+laptop
+10
+335
+cable
+2
+333
+keyboard
+2
+335
+monitor
+2
+336
+mouse
+2
+337
+desk
+4
+334
+mouse
+5
+336
+cable
+
+query III rowsort
+SELECT x.id, (x.city <> 'Palo Alto'), ((41 / 2) + (CASE WHEN (x.id >= 6.00) THEN x.id ELSE 9 END)) FROM (SELECT id, city FROM people) x WHERE (x.id <> 5)
+----
+1
+1
+29
+10
+1
+30
+2
+1
+29
+3
+1
+29
+4
+1
+29
+6
+0
+26
+7
+1
+27
+8
+1
+28
+9
+1
+29
+
+query TITI rowsort
+SELECT a.hired, MAX(a.salary), MAX(a.hired), COUNT(*) FROM people a GROUP BY a.hired
+----
+1993-04-02
+151000
+1993-04-02
+1
+1995-01-15
+155000
+1995-01-15
+1
+1998-06-11
+188000
+1998-06-11
+1
+1999-11-30
+192000
+1999-11-30
+1
+2001-05-01
+185000
+2001-05-01
+1
+2003-02-14
+178000
+2003-02-14
+1
+2005-03-30
+176000
+2005-03-30
+1
+2008-09-22
+142000
+2008-09-22
+1
+2010-07-04
+201000
+2010-07-04
+1
+NULL
+169000
+NULL
+1
+
+query TTII rowsort
+SELECT a.city, a.hired, MAX(a.salary), COUNT(*) FROM people a GROUP BY a.city, a.hired HAVING COUNT(DISTINCT a.age) = 2
+----
+
+query II rowsort
+SELECT COUNT(DISTINCT b.id), MIN(a.shipped) FROM orders a RIGHT JOIN people b ON a.person_id = b.id WHERE (a.order_id IN (1003, NULL))
+----
+1
+0
+
+query IRI nosort
+SELECT (a.salary * (CASE WHEN (a.salary = 226500) THEN a.id ELSE a.salary END)), (a.score * (a.age - a.id)), (CASE WHEN (NOT (a.score = 9.40)) THEN (a.age / 8) ELSE CAST(a.salary AS BIGINT) END) FROM people a WHERE ((a.score IS NOT NULL) AND (a.name BETWEEN 'Katherine Johnson' AND 'Margaret Hamilton')) ORDER BY 1, 2, 3 DESC
+----
+20164000000
+325.600
+5
+30976000000
+282.100
+4
+
+query TTT rowsort
+SELECT (a.city || '-' || a.name), (a.name || '-' || (CASE WHEN (a.id = 3) THEN a.city ELSE a.city END)), a.city FROM people a WHERE (a.salary = 71000)
+----
+
+query T rowsort
+SELECT ordered_on FROM orders WHERE (NOT shipped) EXCEPT SELECT ordered_on FROM orders WHERE (unit_price <> 134.98)
+----
+
+query T rowsort
+SELECT DISTINCT a.product FROM orders a WHERE (a.product NOT IN (SELECT s.product FROM orders s WHERE (s.order_id IS NOT NULL)))
+----
+
+query TT rowsort
+SELECT a.department, (a.hired || '!') FROM people a WHERE (EXISTS (SELECT 1 FROM people s WHERE (s.score < 8.80)))
+----
+Analytics
+1993-04-02!
+Analytics
+2008-09-22!
+Engineering
+1999-11-30!
+Engineering
+2001-05-01!
+Engineering
+2005-03-30!
+Engineering
+2010-07-04!
+Research
+1995-01-15!
+Research
+1998-06-11!
+Research
+2003-02-14!
+Research
+NULL
+
+query R rowsort
+SELECT x.score FROM (SELECT name, score FROM people) x WHERE (x.name < 'Margaret Hamilton')
+----
+7.000
+8.250
+8.400
+8.800
+9.500
+9.500
+9.900
+NULL
+
+query TII rowsort
+SELECT name, active, id FROM people WHERE (age BETWEEN 28 AND 49) EXCEPT SELECT name, active, id FROM people WHERE (name BETWEEN 'Donald Knuth' AND 'Tim Berners-Lee')
+----
+Ada Lovelace
+1
+1
+Alan Turing
+1
+3
+Barbara Liskov
+1
+5
+
+query III nosort
+SELECT (a.order_id + (a.quantity - a.quantity)), (a.unit_price IN (SELECT s.score FROM people s WHERE (NOT (s.name < 'Grace Hopper')))), LAG(a.quantity) OVER (ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE (a.quantity > 2) ORDER BY 1, 2, 3 DESC
+----
+1003
+NULL
+NULL
+1006
+NULL
+4
+1010
+NULL
+10
+
+query II rowsort
+SELECT (a.person_id - b.order_id), (b.quantity - a.order_id) FROM orders a INNER JOIN orders b ON a.product = b.product WHERE (a.quantity BETWEEN 5 AND 7)
+----
+-1002
+-1005
+-998
+-1000
+
+query TI rowsort
+SELECT 'x', (x.quantity <> 9.00) FROM (SELECT person_id, quantity FROM orders) x WHERE (x.person_id > 1.00)
+----
+x
+1
+x
+1
+x
+1
+x
+1
+x
+1
+x
+1
+x
+1
+x
+1
+x
+1
+
+query TI nosort
+SELECT (a.hired || '!'), RANK() OVER (PARTITION BY a.id ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired) FROM people a WHERE (a.salary BETWEEN 88000 AND 184999) ORDER BY 1, 2
+----
+NULL
+1
+1993-04-02!
+1
+1995-01-15!
+1
+2003-02-14!
+1
+2005-03-30!
+1
+2008-09-22!
+1
+
+query II nosort
+SELECT (a.department LIKE 'Engineering'), a.age FROM people a WHERE (a.active <> FALSE) ORDER BY 1, 2 DESC
+----
+0
+49
+0
+44
+0
+41
+1
+45
+1
+39
+1
+38
+1
+36
+
+query ITI nosort
+SELECT (a.age - 1), (CASE WHEN (a.id > 4) THEN a.name ELSE a.city END), COUNT(*) OVER (ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired) FROM people a WHERE (a.name NOT IN ('Katherine Johnson', 'Ada Lovelace', NULL)) ORDER BY 1, 2, 3 DESC
+----
+
+query IT nosort
+SELECT (NOT (a.id > 8.00)), (CASE WHEN (a.id < 7) THEN a.department ELSE a.department END) FROM people a WHERE ((a.department BETWEEN 'Analytics' AND 'Research') OR ((NOT (a.department LIKE '%ar%')) AND (NOT (a.score = 4.20)))) ORDER BY 1, 2 DESC
+----
+0
+Research
+0
+Analytics
+1
+Research
+1
+Research
+1
+Research
+1
+Engineering
+1
+Engineering
+1
+Engineering
+1
+Engineering
+1
+Analytics
+
+query TTI rowsort
+SELECT a.city, a.name, a.salary FROM people a WHERE (a.age <> 38)
+----
+Austin
+Edsger Dijkstra
+169000
+Cambridge
+Margaret Hamilton
+176000
+Hampton
+Katherine Johnson
+142000
+London
+Ada Lovelace
+185000
+London
+Alan Turing
+178000
+London
+Tim Berners-Lee
+188000
+New York
+Grace Hopper
+192000
+Palo Alto
+Donald Knuth
+155000
+Yorktown
+Frances Allen
+151000
+
+query TRII rowsort
+SELECT a.department, SUM(b.score), SUM(b.age), MAX(b.age) FROM people a LEFT JOIN people b ON a.department = b.department GROUP BY a.department HAVING SUM(DISTINCT a.salary) > 4
+----
+Analytics
+34.400
+202
+57
+Engineering
+145.400
+632
+45
+Research
+67.600
+812
+61
+
+query II rowsort
+SELECT DISTINCT (a.ordered_on < '2024-02-02'), 5 FROM orders a WHERE ((a.person_id <> 9) AND (a.quantity = 6))
+----
+
+query ITRI rowsort
+SELECT a.active, a.department, AVG(a.salary), COUNT(*) FROM people a GROUP BY a.active, a.department
+----
+0
+Analytics
+151000.000
+1
+0
+Research
+162000.000
+2
+1
+Analytics
+142000.000
+1
+1
+Engineering
+188500.000
+4
+1
+Research
+183000.000
+2
+
+query IIR rowsort
+SELECT COUNT(*), MIN(b.age), AVG(a.score) FROM people a JOIN people b ON a.department = b.department AND (NOT b.active) WHERE (a.active = TRUE)
+----
+5
+52
+8.800
+
+query TRR rowsort
+SELECT a.department, SUM(a.score), AVG(a.id) FROM people a GROUP BY a.department
+----
+Analytics
+17.200
+8.500
+Engineering
+36.350
+4.000
+Research
+16.900
+5.500
+
+query T rowsort
+SELECT a.product FROM orders a WHERE ((a.quantity IN (10, 5, NULL)) AND (a.product <= 'cable'))
+----
+cable
+cable
+
+query TT rowsort
+SELECT (a.name || '-' || CAST(a.salary AS TEXT)), a.name FROM people a WHERE (a.city IN ('London'))
+----
+Ada Lovelace-185000
+Ada Lovelace
+Alan Turing-178000
+Alan Turing
+Tim Berners-Lee-188000
+Tim Berners-Lee
+
+query TTI rowsort
+SELECT MIN(a.hired), MAX(a.city), MIN(a.salary) FROM people a WHERE (a.salary BETWEEN 155001 AND 201000) HAVING AVG(a.id) = 4
+----
+
+query TI rowsort
+SELECT a.city, SUM(DISTINCT a.salary) FROM people a GROUP BY a.city HAVING AVG(a.id) <> 1
+----
+Austin
+169000
+Cambridge
+176000
+Hampton
+142000
+London
+551000
+New York
+393000
+Palo Alto
+155000
+Yorktown
+151000
+
+query I rowsort
+SELECT (a.age * (CASE WHEN (a.active <> TRUE) THEN a.salary ELSE 20 END)) FROM people a WHERE (a.id <> 4.00)
+----
+720
+760
+780
+820
+8607000
+880
+900
+9455000
+980
+
+query TI nosort
+SELECT (CASE WHEN (a.name <> 'Donald Knuth') THEN a.name ELSE a.department END), (a.id BETWEEN 4 AND 9) FROM people a WHERE (a.salary IN (SELECT s.person_id FROM orders s WHERE (s.product IS NULL))) ORDER BY 1, 2
+----
+
+query TI nosort
+SELECT a.product, SUM(a.person_id) OVER (ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE ((NOT (a.order_id < 1001)) OR (a.quantity IN (2, 4, 5))) ORDER BY 1, 2
+----
+cable
+19
+cable
+44
+desk
+12
+desk
+55
+keyboard
+1
+keyboard
+24
+laptop
+33
+laptop
+45
+monitor
+4
+monitor
+17
+mouse
+5
+mouse
+36
+
+query III rowsort
+SELECT MAX(a.id), MAX(a.id), COUNT(*) FROM people a HAVING SUM(a.score) < 3
+----
+
+query RI nosort
+SELECT a.unit_price, DENSE_RANK() OVER (PARTITION BY a.order_id ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE (a.unit_price <= 36.38) ORDER BY 1, 2
+----
+7.990
+1
+7.990
+1
+24.250
+1
+24.250
+1
+
+query T rowsort
+SELECT a.name FROM people a WHERE (a.hired < '2001-05-01')
+----
+Donald Knuth
+Frances Allen
+Grace Hopper
+Tim Berners-Lee
+
+query TR rowsort
+SELECT a.city, SUM(DISTINCT a.score) FROM people a GROUP BY a.city HAVING AVG(a.id) < 3
+----
+
+query TTR rowsort
+SELECT (CASE WHEN (a.unit_price < 44.99) THEN a.product ELSE a.product END), a.product, (a.unit_price + a.unit_price) FROM orders a WHERE (a.order_id >= 1006)
+----
+cable
+cable
+15.980
+cable
+cable
+15.980
+desk
+desk
+1224.000
+keyboard
+keyboard
+179.980
+laptop
+laptop
+3798.000
+laptop
+laptop
+3798.000
+mouse
+mouse
+48.500
+
+query TI rowsort
+SELECT a.city, a.id FROM people a JOIN orders b ON a.id = b.person_id WHERE (a.active = TRUE)
+----
+Cambridge
+8
+Hampton
+7
+London
+1
+London
+1
+London
+1
+London
+3
+London
+3
+London
+9
+New York
+2
+New York
+5
+New York
+5
+
+query IRII rowsort
+SELECT a.id, AVG(a.score), MAX(a.active), MIN(a.age) FROM people a WHERE (NOT (a.hired >= '1998-06-11')) GROUP BY a.id
+----
+10
+8.400
+0
+57
+6
+9.900
+0
+61
+
+query I rowsort
+SELECT quantity FROM orders WHERE (person_id <= 13) UNION ALL SELECT quantity FROM orders WHERE (NOT (product <= 'desk'))
+----
+1
+1
+1
+1
+1
+1
+1
+1
+1
+10
+2
+2
+2
+2
+2
+2
+2
+4
+4
+5
+
+query TIR rowsort
+SELECT ordered_on, person_id, unit_price FROM orders WHERE (ordered_on NOT IN ('2024-02-11')) EXCEPT SELECT ordered_on, person_id, unit_price FROM orders WHERE (unit_price > 174.75)
+----
+2024-01-15
+1
+89.990
+2024-02-02
+1
+24.250
+2024-03-19
+2
+7.990
+2024-04-01
+5
+89.990
+2024-05-08
+3
+24.250
+2024-05-30
+8
+7.990
+
+query TI nosort
+SELECT (CASE WHEN (a.quantity < (SELECT SUM(s.age) FROM people s)) THEN a.product ELSE a.product END), COUNT(*) OVER (ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE ((a.ordered_on BETWEEN '2024-01-15' AND '2024-03-19') AND (a.person_id >= 5)) ORDER BY 1, 2 DESC
+----
+desk
+1
+monitor
+2
+
+query ITR rowsort
+SELECT quantity, product, unit_price FROM orders WHERE (product IN ('cable', NULL)) EXCEPT SELECT quantity, product, unit_price FROM orders WHERE (NOT shipped)
+----
+
+query IT nosort
+SELECT a.salary, a.city FROM people a WHERE (a.department >= 'Analytics') ORDER BY 1, 2
+----
+142000
+Hampton
+151000
+Yorktown
+155000
+Palo Alto
+169000
+Austin
+176000
+Cambridge
+178000
+London
+185000
+London
+188000
+London
+192000
+New York
+201000
+New York
+
+query TT rowsort
+SELECT x.department, (x.hired || '!') FROM (SELECT salary, hired, department, id FROM people) x WHERE (x.id BETWEEN 4 AND 8)
+----
+Analytics
+2008-09-22!
+Engineering
+2005-03-30!
+Engineering
+2010-07-04!
+Research
+1995-01-15!
+Research
+NULL
+
+query III rowsort
+SELECT DISTINCT (a.order_id < (SELECT COUNT(s.salary) FROM people s)), (a.quantity * 27), 43 FROM orders a RIGHT JOIN people b ON a.person_id = b.id WHERE ((NOT (a.order_id > 1005)) OR ((a.unit_price > 2848.50) AND (a.order_id = 1510)))
+----
+0
+108
+43
+0
+27
+43
+0
+54
+43
+
+query RT nosort
+SELECT CAST(b.salary AS FLOAT), b.name FROM people a FULL JOIN people b ON a.city = b.city WHERE ((b.score = 9.40) OR (a.salary IS NOT NULL)) ORDER BY 1, 2
+----
+142000.000
+Katherine Johnson
+151000.000
+Frances Allen
+155000.000
+Donald Knuth
+169000.000
+Edsger Dijkstra
+176000.000
+Margaret Hamilton
+178000.000
+Alan Turing
+178000.000
+Alan Turing
+178000.000
+Alan Turing
+185000.000
+Ada Lovelace
+185000.000
+Ada Lovelace
+185000.000
+Ada Lovelace
+188000.000
+Tim Berners-Lee
+188000.000
+Tim Berners-Lee
+188000.000
+Tim Berners-Lee
+192000.000
+Grace Hopper
+192000.000
+Grace Hopper
+201000.000
+Barbara Liskov
+201000.000
+Barbara Liskov
+
+query III rowsort
+SELECT DISTINCT (a.product BETWEEN 'desk' AND 'monitor'), a.order_id, (a.order_id IS NOT NULL) FROM orders a WHERE (a.product NOT BETWEEN 'cable' AND 'laptop')
+----
+0
+1003
+1
+0
+1009
+1
+1
+1002
+1
+1
+1005
+1
+
+query TIII rowsort
+SELECT a.ordered_on, COUNT(DISTINCT a.shipped), COUNT(a.order_id), COUNT(*) FROM orders a WHERE (a.shipped IS NOT NULL) GROUP BY a.ordered_on
+----
+2024-01-15
+1
+1
+1
+2024-01-17
+1
+1
+1
+2024-02-02
+1
+1
+1
+2024-02-11
+1
+1
+1
+2024-03-05
+1
+1
+1
+2024-03-19
+1
+1
+1
+2024-04-01
+1
+1
+1
+2024-05-08
+1
+1
+1
+2024-05-30
+1
+1
+1
+2024-06-14
+1
+1
+1
+2024-07-03
+1
+1
+1
+
+query II rowsort
+SELECT DISTINCT (a.person_id * a.quantity), (a.quantity NOT BETWEEN 0 AND 1) FROM orders a WHERE (NOT (a.order_id < 504))
+----
+1
+0
+10
+1
+2
+1
+20
+1
+3
+0
+4
+1
+40
+1
+5
+0
+6
+1
+7
+0
+9
+0
+
+query IT rowsort
+SELECT id, hired FROM people WHERE (name IS NULL) UNION ALL SELECT id, hired FROM people WHERE ((NOT (hired <> '1998-06-11')) AND (salary >= 96000))
+----
+9
+1998-06-11
+
+query II nosort
+SELECT CAST((a.score + b.quantity) AS INT), SUM(b.order_id) OVER (PARTITION BY a.id ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired, b.order_id, b.person_id, b.product, b.quantity, b.unit_price, b.ordered_on) FROM people a RIGHT JOIN orders b ON a.id = b.person_id AND (a.active <> TRUE) WHERE (a.id > 3) ORDER BY 1, 2 DESC
+----
+10
+1012
+
+query IIT nosort
+SELECT 34, (a.active <> TRUE), (CASE WHEN ((a.active = TRUE) AND (a.active = TRUE)) THEN a.city ELSE (CASE WHEN (a.department LIKE '%ng') THEN a.department ELSE a.city END) END) FROM people a WHERE (a.active NOT IN (TRUE, FALSE)) ORDER BY 1, 2, 3
+----
+
+query I nosort
+SELECT DISTINCT (a.unit_price <> 174.75) FROM orders a INNER JOIN orders b ON a.product = b.product WHERE (a.shipped = FALSE) ORDER BY 1
+----
+1
+
+query TIR rowsort
+SELECT a.product, a.shipped, AVG(a.unit_price) FROM orders a GROUP BY a.product, a.shipped
+----
+cable
+0
+7.990
+desk
+0
+612.000
+desk
+1
+612.000
+keyboard
+1
+89.990
+laptop
+1
+1899.000
+laptop
+NULL
+1899.000
+monitor
+1
+349.500
+mouse
+0
+24.250
+mouse
+1
+24.250
+
+query TR rowsort
+SELECT 'x', x.score FROM (SELECT active, score FROM people) x WHERE (NOT (x.score BETWEEN 4.20 AND 8.00))
+----
+x
+8.250
+x
+8.400
+x
+8.800
+x
+9.100
+x
+9.500
+x
+9.500
+x
+9.900
+
+query III nosort
+SELECT ((CASE WHEN (a.unit_price <> 7.99) THEN b.id ELSE b.salary END) - (CASE WHEN (a.person_id <= 7) THEN a.order_id ELSE b.age END)), (CASE WHEN (b.salary > (SELECT COUNT(s.salary) FROM people s)) THEN 6 ELSE a.quantity END), ROW_NUMBER() OVER (ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on, b.id, b.name, b.age, b.city, b.department, b.salary, b.score, b.hired) FROM orders a RIGHT JOIN people b ON a.person_id = b.id AND (a.order_id = 1003) WHERE (a.unit_price > 4.00) ORDER BY 1, 2, 3
+----
+-1002
+6
+1
+
+query TI rowsort
+SELECT (a.product || '-' || a.product), (a.person_id IN (5, 9, 8, NULL)) FROM orders a WHERE (a.unit_price = 36.38)
+----
+
+query TI rowsort
+SELECT MIN(b.city), COUNT(DISTINCT b.city) FROM people a JOIN people b ON a.hired = b.hired HAVING COUNT(*) <= 1
+----
+
+query RI rowsort
+SELECT AVG(a.score), COUNT(*) FROM people a WHERE (((a.active) AND (a.city LIKE 'Lo%')) OR (a.city NOT IN (SELECT s.name FROM people s WHERE (NOT (s.score >= 4.12))))) HAVING COUNT(*) <> 4
+----
+8.806
+10
+
+query IRT nosort
+SELECT 36, (x.score / 7), x.city FROM (SELECT department, score, city FROM people) x WHERE ((NOT (x.city = 'Yorktown')) AND (x.city IS NULL)) ORDER BY 1, 2, 3
+----
+
+query TI rowsort
+SELECT ordered_on, shipped FROM orders WHERE (((unit_price <= 524.25) OR (order_id = 1513)) AND (product NOT BETWEEN 'cable' AND 'mouse')) UNION ALL SELECT ordered_on, shipped FROM orders WHERE (person_id >= 3.00)
+----
+2024-01-17
+1
+2024-02-11
+1
+2024-03-05
+1
+2024-04-01
+1
+2024-04-22
+NULL
+2024-05-08
+1
+2024-05-30
+0
+2024-07-03
+0
+
+query R rowsort
+SELECT score FROM people WHERE (city BETWEEN 'London' AND 'Yorktown') UNION SELECT score FROM people WHERE ((name = 'Margaret Hamilton') AND (name IN ('Barbara Liskov', 'Frances Allen', 'Tim Berners-Lee', NULL)))
+----
+8.250
+8.400
+9.500
+9.900
+NULL
+
+query TI rowsort
+SELECT DISTINCT (CASE WHEN (a.person_id NOT IN (SELECT s.person_id FROM orders s WHERE (s.order_id BETWEEN 1007 AND 1503))) THEN (a.product || '-' || a.product) ELSE a.product END), (46 + a.person_id) FROM orders a WHERE (((NOT (a.shipped = TRUE)) OR (NOT (a.shipped = TRUE))) OR (a.ordered_on IS NOT NULL))
+----
+cable
+54
+cable-cable
+48
+desk
+56
+desk-desk
+53
+keyboard
+47
+keyboard
+51
+laptop
+47
+laptop
+55
+monitor
+49
+monitor
+51
+mouse
+47
+mouse
+49
+
+query T nosort
+SELECT (a.ordered_on || '!') FROM orders a WHERE (a.order_id = 1011) ORDER BY 1
+----
+2024-06-14!
+
+query T rowsort
+SELECT product FROM orders WHERE (product LIKE 'desk') INTERSECT SELECT product FROM orders WHERE (person_id BETWEEN 0 AND 7)
+----
+desk
+
+query R rowsort
+SELECT unit_price FROM orders WHERE (ordered_on NOT IN ('2024-02-02')) EXCEPT SELECT unit_price FROM orders WHERE (NOT (NOT (person_id >= 0.00)))
+----
+
+query IRR rowsort
+SELECT (13 * 12), (x.score / 4), (x.score * x.score) FROM (SELECT city, score, hired, name FROM people WHERE (name IN ('Donald Knuth', 'Ada Lovelace', 'Katherine Johnson'))) x WHERE (x.hired = '1998-06-11')
+----
+
+query IIT rowsort
+SELECT (a.salary / 3), a.id, CAST(a.id AS TEXT) FROM people a WHERE (a.name LIKE '%on')
+----
+47333
+7
+7
+58666
+8
+8
+
+query TII rowsort
+SELECT (a.hired || '!'), CAST(a.score AS INT), (a.id - 31) FROM people a WHERE ((EXISTS (SELECT 1 FROM people s WHERE ((s.salary <> 92500) AND (s.active)))) AND (a.active NOT IN (FALSE, NULL)))
+----
+
+query IITR rowsort
+SELECT a.person_id, MIN(a.shipped), MAX(a.ordered_on), AVG(a.quantity) FROM orders a WHERE (a.order_id NOT BETWEEN 502 AND 1012) GROUP BY a.person_id
+----
+
+query T rowsort
+SELECT (a.department || '-' || a.department) FROM people a WHERE (a.salary <= 155001)
+----
+Analytics-Analytics
+Analytics-Analytics
+Research-Research
+
+query TII rowsort
+SELECT (CASE WHEN (x.active) THEN x.name ELSE x.department END), (x.name LIKE 'Ma%'), (CASE WHEN (x.department <> 'Research') THEN x.salary ELSE (x.salary + 8) END) FROM (SELECT department, active, name, salary FROM people) x WHERE (x.name >= 'Frances Allen')
+----
+Analytics
+0
+151000
+Grace Hopper
+0
+192000
+Katherine Johnson
+0
+142000
+Margaret Hamilton
+1
+176000
+Tim Berners-Lee
+0
+188008
+
+query ITT rowsort
+SELECT DISTINCT (a.person_id = (SELECT MAX(s.score) FROM people s)), CAST(19 AS TEXT), a.product FROM orders a WHERE (NOT (a.person_id <> 3.00))
+----
+0
+19
+monitor
+0
+19
+mouse
+
+query R rowsort
+SELECT MIN(a.score) FROM people a WHERE (a.department BETWEEN 'Engineering' AND 'Research') HAVING AVG(a.salary) <= 3
+----
+
+query RT nosort
+SELECT (a.score - CAST(a.score AS INT)), (a.city || '-' || a.name) FROM people a WHERE (a.hired IN ('1995-01-15', '2008-09-22', '2001-05-01')) ORDER BY 1, 2 DESC
+----
+0.500
+London-Ada Lovelace
+0.800
+Hampton-Katherine Johnson
+0.900
+Palo Alto-Donald Knuth
+
+query T rowsort
+SELECT 'x' FROM (SELECT ordered_on, shipped FROM orders WHERE ((unit_price < 12.12) OR (ordered_on >= '2024-04-01'))) x WHERE (((x.ordered_on <> '2024-04-22') OR (x.shipped = FALSE)) AND (NOT (x.ordered_on >= '2024-04-01')))
+----
+x
+
+query III rowsort
+SELECT (CASE WHEN (a.order_id > 1006.00) THEN b.age ELSE (7 * 1) END), (b.department LIKE 'Analytics'), (b.score >= 4.20) FROM orders a INNER JOIN people b ON a.person_id = b.id WHERE (b.age BETWEEN 45 AND 78)
+----
+49
+0
+NULL
+57
+1
+1
+7
+0
+1
+
+query TII rowsort
+SELECT DISTINCT CAST(a.salary AS TEXT), (a.id * (a.salary * b.order_id)), 32 FROM people a INNER JOIN orders b ON a.id = b.person_id AND (a.id > 13) WHERE (a.city > 'London')
+----
+
+query I rowsort
+SELECT (CASE WHEN (x.product < 'mouse') THEN x.order_id ELSE x.order_id END) FROM (SELECT product, order_id FROM orders) x WHERE (x.product BETWEEN 'keyboard' AND 'laptop')
+----
+1001
+1007
+1008
+1011
+
+query R rowsort
+SELECT (a.unit_price + 13) FROM orders a WHERE ((a.person_id > 1) AND (a.shipped = TRUE))
+----
+102.990
+362.500
+362.500
+37.250
+625.000
+
+query RIT rowsort
+SELECT ((41 * 13) - CAST(x.id AS FLOAT)), (x.id * x.id), x.name FROM (SELECT name, active, id FROM people WHERE (salary < 192001)) x WHERE (x.id > 2)
+----
+523.000
+100
+Frances Allen
+524.000
+81
+Tim Berners-Lee
+525.000
+64
+Margaret Hamilton
+526.000
+49
+Katherine Johnson
+527.000
+36
+Donald Knuth
+529.000
+16
+Edsger Dijkstra
+530.000
+9
+Alan Turing
+
+query TII rowsort
+SELECT DISTINCT CAST((a.order_id * b.id) AS TEXT), (a.order_id + 18), (a.person_id - b.id) FROM orders a LEFT JOIN people b ON a.person_id = b.id AND (b.city NOT LIKE '%on') WHERE (b.department BETWEEN 'Analytics' AND 'Engineering')
+----
+10120
+1030
+0
+2012
+1024
+0
+5025
+1023
+0
+5035
+1025
+0
+8080
+1028
+0
+
+query TTI rowsort
+SELECT a.city, b.ordered_on, 25 FROM people a LEFT JOIN orders b ON a.id = b.person_id WHERE (a.hired < '2008-09-22')
+----
+Cambridge
+2024-05-30
+25
+London
+2024-01-15
+25
+London
+2024-01-17
+25
+London
+2024-02-02
+25
+London
+2024-04-22
+25
+London
+2024-05-08
+25
+London
+2024-06-14
+25
+New York
+2024-03-19
+25
+Palo Alto
+NULL
+25
+Yorktown
+2024-07-03
+25
+
+query I rowsort
+SELECT quantity FROM orders WHERE (unit_price >= 89.99) UNION ALL SELECT quantity FROM orders WHERE (ordered_on IS NOT NULL)
+----
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+10
+2
+2
+2
+2
+2
+2
+2
+4
+5
+
+query I rowsort
+SELECT (x.department <> 'Analytics') FROM (SELECT score, salary, department, name FROM people WHERE (score BETWEEN 9.40 AND 9.80)) x WHERE (x.score = 8.25)
+----
+
+query III rowsort
+SELECT b.shipped, SUM(b.person_id), COUNT(*) FROM people a FULL JOIN orders b ON a.id = b.person_id AND (b.quantity <= 2) GROUP BY b.shipped HAVING SUM(DISTINCT a.score) = 1
+----
+
+query IR rowsort
+SELECT COUNT(*), MIN(a.unit_price) FROM orders a HAVING COUNT(*) < 1
+----
+
+query I rowsort
+SELECT MAX(a.order_id) FROM orders a WHERE (a.unit_price IN (7.99)) HAVING COUNT(a.quantity) < 1
+----
+
+query I rowsort
+SELECT (x.product >= 'cable') FROM (SELECT person_id, product FROM orders WHERE (unit_price NOT BETWEEN 6.99 AND 349.50)) x WHERE (x.person_id = 9.00)
+----
+1
+
+query ITT nosort
+SELECT (a.name NOT LIKE 'Ti%'), CAST(a.age AS TEXT), (CASE WHEN (a.salary <> 89000) THEN a.name ELSE a.city END) FROM people a WHERE (a.name LIKE '%on') ORDER BY 1, 2, 3
+----
+1
+39
+Margaret Hamilton
+1
+44
+Katherine Johnson
+
+query III nosort
+SELECT b.quantity, (NOT a.active), SUM(b.quantity) OVER (PARTITION BY b.product ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired, b.order_id, b.person_id, b.product, b.quantity, b.unit_price, b.ordered_on) FROM people a FULL JOIN orders b ON a.id = b.person_id WHERE (NOT (a.score = 13.20)) ORDER BY 1, 2, 3
+----
+NULL
+1
+NULL
+NULL
+1
+NULL
+1
+0
+1
+1
+0
+1
+1
+0
+3
+2
+0
+2
+2
+0
+2
+2
+1
+3
+4
+0
+4
+5
+0
+15
+10
+0
+10
+
+query IRI nosort
+SELECT (a.quantity + b.id), (1 - a.unit_price), SUM(a.quantity) OVER (ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on, b.id, b.name, b.age, b.city, b.department, b.salary, b.score, b.hired) FROM orders a INNER JOIN people b ON a.person_id = b.id WHERE (a.ordered_on = '2024-02-11') ORDER BY 1, 2, 3
+----
+8
+-611.000
+1
+
+query I rowsort
+SELECT DISTINCT CAST((19 / 7) AS INT) FROM orders a WHERE (a.shipped = TRUE)
+----
+2
+
+query TIII nosort
+SELECT (CASE WHEN (a.order_id < 1507) THEN a.product ELSE a.product END), ((a.shipped) AND (a.quantity = 3)), (CASE WHEN (a.person_id NOT IN (SELECT s.order_id FROM orders s WHERE (NOT (s.ordered_on <= '2024-02-02')))) THEN a.order_id ELSE (a.order_id + a.person_id) END), RANK() OVER (ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE ((a.order_id NOT IN (1010, 1003, 1011)) OR (a.order_id BETWEEN 506 AND 1005)) ORDER BY 1, 2, 3, 4
+----
+cable
+0
+1006
+6
+desk
+0
+1004
+4
+desk
+0
+1012
+10
+keyboard
+0
+1001
+1
+keyboard
+0
+1007
+7
+laptop
+0
+1008
+8
+monitor
+0
+1002
+2
+monitor
+0
+1005
+5
+mouse
+0
+1003
+3
+mouse
+0
+1009
+9
+
+query IT rowsort
+SELECT (a.quantity - a.person_id), a.ordered_on FROM orders a WHERE (a.order_id IS NOT NULL)
+----
+-1
+2024-05-08
+-2
+2024-01-17
+-3
+2024-03-05
+-3
+2024-05-30
+-4
+2024-04-01
+-6
+2024-02-11
+-8
+2024-04-22
+-8
+2024-07-03
+0
+2024-06-14
+1
+2024-01-15
+3
+2024-02-02
+8
+2024-03-19
+
+query III rowsort
+SELECT a.age, (a.name LIKE '%e %'), (CASE WHEN (a.department BETWEEN 'Analytics' AND 'Research') THEN a.id ELSE a.salary END) FROM people a WHERE (NOT (a.department NOT LIKE '___%'))
+----
+36
+0
+1
+38
+0
+5
+39
+0
+8
+41
+0
+3
+44
+1
+7
+45
+1
+2
+49
+0
+9
+52
+0
+4
+57
+0
+10
+61
+0
+6
+
+query R rowsort
+SELECT CAST(a.score AS FLOAT) FROM people a WHERE (a.id IN (5, 8))
+----
+9.100
+9.500
+
+query IT rowsort
+SELECT (a.hired = '2003-02-14'), a.name FROM people a WHERE (a.name LIKE '%ng')
+----
+1
+Alan Turing
+
+query IIIIR rowsort
+SELECT a.quantity, a.order_id, COUNT(*), MIN(a.quantity), AVG(a.person_id) FROM orders a GROUP BY a.quantity, a.order_id
+----
+1
+1002
+1
+1
+3.000
+1
+1004
+1
+1
+7.000
+1
+1007
+1
+1
+5.000
+1
+1008
+1
+1
+9.000
+1
+1011
+1
+1
+1.000
+10
+1006
+1
+10
+2.000
+2
+1001
+1
+2
+1.000
+2
+1005
+1
+2
+5.000
+2
+1009
+1
+2
+3.000
+2
+1012
+1
+2
+10.000
+4
+1003
+1
+4
+1.000
+5
+1010
+1
+5
+8.000
+
+query TTIR rowsort
+SELECT b.city, a.name, COUNT(DISTINCT a.salary), AVG(b.score) FROM people a JOIN people b ON a.hired = b.hired AND (b.hired >= '2005-03-30') GROUP BY b.city, a.name HAVING AVG(a.score) <= 2
+----
+
+query ITI rowsort
+SELECT a.active, a.city, SUM(DISTINCT a.age) FROM people a WHERE ((a.department NOT LIKE 'Analytics') OR (a.id > 7)) GROUP BY a.active, a.city HAVING SUM(DISTINCT a.id) < 3
+----
+
+query RI rowsort
+SELECT a.unit_price, a.person_id FROM orders a WHERE (a.person_id = 7)
+----
+612.000
+7
+
+query TIRR rowsort
+SELECT a.ordered_on, a.shipped, AVG(a.order_id), AVG(a.person_id) FROM orders a WHERE ((a.unit_price BETWEEN 90.99 AND 349.50) OR (a.unit_price < (SELECT MIN(s.salary) FROM people s))) GROUP BY a.ordered_on, a.shipped
+----
+2024-01-15
+1
+1001.000
+1.000
+2024-01-17
+1
+1002.000
+3.000
+2024-02-02
+0
+1003.000
+1.000
+2024-02-11
+1
+1004.000
+7.000
+2024-03-05
+1
+1005.000
+5.000
+2024-03-19
+0
+1006.000
+2.000
+2024-04-01
+1
+1007.000
+5.000
+2024-04-22
+NULL
+1008.000
+9.000
+2024-05-08
+1
+1009.000
+3.000
+2024-05-30
+0
+1010.000
+8.000
+2024-06-14
+1
+1011.000
+1.000
+2024-07-03
+0
+1012.000
+10.000
+
+query ITI rowsort
+SELECT (a.age > 57.00), a.hired, a.salary FROM people a WHERE (a.hired >= '1999-11-30')
+----
+0
+1999-11-30
+192000
+0
+2001-05-01
+185000
+0
+2003-02-14
+178000
+0
+2005-03-30
+176000
+0
+2008-09-22
+142000
+0
+2010-07-04
+201000
+
+query IIII rowsort
+SELECT a.person_id, a.quantity, COUNT(*), MAX(a.quantity) FROM orders a GROUP BY a.person_id, a.quantity HAVING COUNT(a.quantity) >= 4
+----
+
+query T rowsort
+SELECT (a.hired || '!') FROM people a WHERE (EXISTS (SELECT 1 FROM orders s WHERE (s.person_id <> 9)))
+----
+1993-04-02!
+1995-01-15!
+1998-06-11!
+1999-11-30!
+2001-05-01!
+2003-02-14!
+2005-03-30!
+2008-09-22!
+2010-07-04!
+NULL
+
+query TI nosort
+SELECT a.department, COUNT(*) OVER (ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired, b.id, b.name, b.age, b.city, b.department, b.salary, b.score, b.hired) FROM people a RIGHT JOIN people b ON a.id = b.id WHERE (a.salary > 92500) ORDER BY 1, 2
+----
+Analytics
+7
+Analytics
+10
+Engineering
+1
+Engineering
+2
+Engineering
+5
+Engineering
+8
+Research
+3
+Research
+4
+Research
+6
+Research
+9
+
+query TI rowsort
+SELECT a.product, CAST(a.quantity AS BIGINT) FROM orders a WHERE (a.unit_price < 89.99)
+----
+cable
+10
+cable
+5
+mouse
+2
+mouse
+4
+
+query TR rowsort
+SELECT department, score FROM people WHERE (NOT (city >= 'Austin')) UNION SELECT department, score FROM people WHERE (NOT (NOT active))
+----
+Analytics
+8.800
+Engineering
+8.250
+Engineering
+9.100
+Engineering
+9.500
+Research
+NULL
+
+query ITI rowsort
+SELECT (a.person_id < (SELECT COUNT(s.id) FROM people s)), CAST((a.person_id / 8) AS TEXT), (a.quantity + 38) FROM orders a WHERE (a.ordered_on > '2024-04-01')
+----
+0
+1
+40
+1
+0
+39
+1
+0
+40
+1
+1
+39
+1
+1
+43
+
+query II rowsort
+SELECT a.quantity, MIN(a.order_id) FROM orders a GROUP BY a.quantity
+----
+1
+1002
+10
+1006
+2
+1001
+4
+1003
+5
+1010
+
+query TIII nosort
+SELECT x.name, (CASE WHEN (x.id BETWEEN 2 AND 6) THEN (CASE WHEN (x.id <= 2) THEN x.age ELSE x.age END) ELSE x.age END), x.age, RANK() OVER (PARTITION BY x.age ORDER BY x.id, x.age, x.name) FROM (SELECT id, age, name FROM people) x WHERE (x.name NOT LIKE '%ee') ORDER BY 1, 2, 3, 4
+----
+Ada Lovelace
+36
+36
+1
+Alan Turing
+41
+41
+1
+Barbara Liskov
+38
+38
+1
+Donald Knuth
+61
+61
+1
+Edsger Dijkstra
+52
+52
+1
+Frances Allen
+57
+57
+1
+Grace Hopper
+45
+45
+1
+Katherine Johnson
+44
+44
+1
+Margaret Hamilton
+39
+39
+1
+
+query TIR rowsort
+SELECT (b.name || '-' || CAST(b.age AS TEXT)), 23, (17 - b.score) FROM orders a RIGHT JOIN people b ON a.person_id = b.id WHERE (b.age IN (52, 57, 39, NULL))
+----
+Edsger Dijkstra-52
+23
+10.000
+Frances Allen-57
+23
+8.600
+Margaret Hamilton-39
+23
+7.900
+
+query II nosort
+SELECT (a.department < 'Engineering'), ((22 - a.age) * (CASE WHEN (a.age <> 38) THEN a.id ELSE a.id END)) FROM people a WHERE (a.department BETWEEN 'Analytics' AND 'Research') ORDER BY 1, 2
+----
+0
+-243
+0
+-234
+0
+-136
+0
+-120
+0
+-80
+0
+-57
+0
+-46
+0
+-14
+1
+-350
+1
+-154
+
+query ITT rowsort
+SELECT (a.id >= (SELECT SUM(s.person_id) FROM orders s)), b.product, b.ordered_on FROM people a INNER JOIN orders b ON a.id = b.person_id WHERE ((b.person_id < 0.50) AND (((a.score >= 4.55) AND (b.unit_price <> 8.99)) AND (b.order_id NOT IN (1003, 1008, 1005, NULL))))
+----
+
+query IIII rowsort
+SELECT a.active, a.age, COUNT(*), SUM(a.age) FROM people a GROUP BY a.active, a.age
+----
+0
+52
+1
+52
+0
+57
+1
+57
+0
+61
+1
+61
+1
+36
+1
+36
+1
+38
+1
+38
+1
+39
+1
+39
+1
+41
+1
+41
+1
+44
+1
+44
+1
+45
+1
+45
+1
+49
+1
+49
+
+query TRT rowsort
+SELECT a.product, a.unit_price, (CASE WHEN ((a.person_id > (SELECT MIN(s.person_id) FROM orders s)) OR (a.person_id > 1.50)) THEN (CASE WHEN (a.quantity = 2) THEN a.product ELSE a.product END) ELSE a.product END) FROM orders a WHERE (a.person_id <> 0)
+----
+cable
+7.990
+cable
+cable
+7.990
+cable
+desk
+612.000
+desk
+desk
+612.000
+desk
+keyboard
+89.990
+keyboard
+keyboard
+89.990
+keyboard
+laptop
+1899.000
+laptop
+laptop
+1899.000
+laptop
+monitor
+349.500
+monitor
+monitor
+349.500
+monitor
+mouse
+24.250
+mouse
+mouse
+24.250
+mouse
+
+query TRR rowsort
+SELECT a.product, AVG(a.order_id), AVG(a.unit_price) FROM orders a GROUP BY a.product HAVING AVG(a.order_id) <> 4
+----
+cable
+1008.000
+7.990
+desk
+1008.000
+612.000
+keyboard
+1004.000
+89.990
+laptop
+1009.500
+1899.000
+monitor
+1003.500
+349.500
+mouse
+1006.000
+24.250
+
+query TT rowsort
+SELECT CAST(CAST(a.score AS INT) AS TEXT), (CASE WHEN (a.age > 38) THEN a.department ELSE a.department END) FROM people a WHERE (a.score IN (SELECT s.score FROM people s WHERE ((s.age = 62) AND (s.active = TRUE))))
+----
+
+query III nosort
+SELECT a.quantity, ((a.product LIKE 'de%') AND (a.order_id > 1010.00)), ROW_NUMBER() OVER (ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE (a.person_id >= (SELECT MIN(s.order_id) FROM orders s)) ORDER BY 1, 2, 3 DESC
+----
+
+query TT rowsort
+SELECT b.city, (CASE WHEN (a.id >= (SELECT SUM(s.quantity) FROM orders s)) THEN b.name ELSE b.department END) FROM people a LEFT JOIN people b ON a.city = b.city WHERE (a.active IN (FALSE, TRUE))
+----
+Austin
+Research
+Cambridge
+Engineering
+Hampton
+Analytics
+London
+Engineering
+London
+Engineering
+London
+Engineering
+London
+Research
+London
+Research
+London
+Research
+London
+Research
+London
+Research
+London
+Research
+New York
+Engineering
+New York
+Engineering
+New York
+Engineering
+New York
+Engineering
+Palo Alto
+Research
+Yorktown
+Analytics
+
+query TII rowsort
+SELECT DISTINCT b.city, (b.department NOT LIKE 'Analytics'), 8 FROM people a INNER JOIN people b ON a.hired = b.hired AND (a.salary <= 192000) WHERE (b.age IN (41, 38, 49, NULL))
+----
+London
+1
+8
+
+query IIT rowsort
+SELECT a.person_id, (a.shipped IN (FALSE, TRUE)), (b.department || '-' || b.city) FROM orders a JOIN people b ON a.person_id = b.id WHERE (b.city BETWEEN 'New York' AND 'Yorktown')
+----
+10
+1
+Analytics-Yorktown
+2
+1
+Engineering-New York
+5
+1
+Engineering-New York
+5
+1
+Engineering-New York
+
+query IT rowsort
+SELECT DISTINCT (a.shipped), a.product FROM orders a FULL JOIN orders b ON a.quantity = b.quantity WHERE (b.shipped IN (TRUE, FALSE))
+----
+0
+cable
+0
+desk
+0
+mouse
+1
+desk
+1
+keyboard
+1
+laptop
+1
+monitor
+1
+mouse
+NULL
+laptop
+
+query IT nosort
+SELECT (b.salary >= 100500), (b.hired || '!') FROM orders a RIGHT JOIN people b ON a.person_id = b.id WHERE (a.quantity < 5) ORDER BY 1, 2
+----
+1
+1993-04-02!
+1
+1998-06-11!
+1
+2001-05-01!
+1
+2001-05-01!
+1
+2001-05-01!
+1
+2003-02-14!
+1
+2003-02-14!
+1
+2008-09-22!
+1
+2010-07-04!
+1
+2010-07-04!
+
+query I rowsort
+SELECT (x.age + (x.age / 2)) FROM (SELECT age, salary FROM people) x WHERE (x.salary < 192000.00)
+----
+54
+58
+61
+66
+73
+78
+85
+91
+
+query II rowsort
+SELECT a.quantity, SUM(DISTINCT a.order_id) FROM orders a GROUP BY a.quantity
+----
+1
+5032
+10
+1006
+2
+4027
+4
+1003
+5
+1010
+
+query TI nosort
+SELECT a.product, SUM(a.order_id) OVER (PARTITION BY a.quantity ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on, b.order_id, b.person_id, b.product, b.quantity, b.unit_price, b.ordered_on) FROM orders a FULL JOIN orders b ON a.person_id = b.person_id WHERE (b.shipped IS NOT NULL) ORDER BY 1, 2
+----
+cable
+1006
+cable
+1010
+desk
+3008
+desk
+8043
+keyboard
+1001
+keyboard
+2002
+keyboard
+3003
+keyboard
+4015
+keyboard
+5022
+laptop
+6033
+laptop
+7044
+laptop
+8055
+monitor
+1002
+monitor
+2004
+monitor
+4008
+monitor
+5013
+mouse
+1003
+mouse
+2006
+mouse
+3009
+mouse
+6022
+mouse
+7031
+
+query IT nosort
+SELECT a.age, CAST(3 AS TEXT) FROM people a WHERE (a.salary <= 155000) ORDER BY 1, 2
+----
+44
+3
+57
+3
+61
+3
+
+query TII rowsort
+SELECT (CASE WHEN (a.ordered_on <= '2024-01-17') THEN a.product ELSE (CASE WHEN (a.product >= 'desk') THEN a.product ELSE a.product END) END), (a.quantity < 10), a.order_id FROM orders a WHERE ((a.ordered_on <= '2024-07-03') OR (a.unit_price = 25.25))
+----
+cable
+0
+1006
+cable
+1
+1010
+desk
+1
+1004
+desk
+1
+1012
+keyboard
+1
+1001
+keyboard
+1
+1007
+laptop
+1
+1008
+laptop
+1
+1011
+monitor
+1
+1002
+monitor
+1
+1005
+mouse
+1
+1003
+mouse
+1
+1009
+
+query III nosort
+SELECT (a.order_id + a.quantity), (CASE WHEN (a.product >= 'keyboard') THEN (a.person_id - a.order_id) ELSE CAST(39 AS INT) END), ROW_NUMBER() OVER (PARTITION BY a.order_id ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE (a.person_id IS NOT NULL) ORDER BY 1, 2, 3
+----
+1003
+-1000
+1
+1003
+-999
+1
+1005
+39
+1
+1007
+-1002
+1
+1007
+-1000
+1
+1008
+-1002
+1
+1009
+-999
+1
+1011
+-1006
+1
+1012
+-1010
+1
+1014
+39
+1
+1015
+39
+1
+1016
+39
+1
+
+query RTR rowsort
+SELECT (x.unit_price - x.order_id), 'x', CAST(x.person_id AS FLOAT) FROM (SELECT person_id, unit_price, order_id FROM orders) x WHERE (x.unit_price <= 24.25)
+----
+-1002.010
+x
+8.000
+-978.750
+x
+1.000
+-984.750
+x
+3.000
+-998.010
+x
+2.000
+
+query I rowsort
+SELECT (a.quantity <= 5) FROM orders a FULL JOIN orders b ON a.product = b.product WHERE (a.quantity < 1)
+----
+
+query RII rowsort
+SELECT unit_price, shipped, order_id FROM orders WHERE (order_id IS NULL) UNION ALL SELECT unit_price, shipped, order_id FROM orders WHERE (ordered_on = '2024-05-30')
+----
+7.990
+0
+1010
+
+query I rowsort
+SELECT (1 - a.quantity) FROM orders a WHERE (a.person_id NOT BETWEEN 1 AND 15)
+----
+
+query TII rowsort
+SELECT a.hired, COUNT(a.hired), COUNT(a.age) FROM people a GROUP BY a.hired
+----
+1993-04-02
+1
+1
+1995-01-15
+1
+1
+1998-06-11
+1
+1
+1999-11-30
+1
+1
+2001-05-01
+1
+1
+2003-02-14
+1
+1
+2005-03-30
+1
+1
+2008-09-22
+1
+1
+2010-07-04
+1
+1
+NULL
+0
+1
+
+query RI rowsort
+SELECT AVG(a.salary), MAX(a.age) FROM people a FULL JOIN orders b ON a.id = b.person_id
+----
+177571.429
+61
+
+query I rowsort
+SELECT (a.salary * 32) FROM people a WHERE (a.salary > 84500)
+----
+4544000
+4832000
+4960000
+5408000
+5632000
+5696000
+5920000
+6016000
+6144000
+6432000
+
+query TI rowsort
+SELECT department, age FROM people WHERE (age >= 39) INTERSECT SELECT department, age FROM people WHERE (name IN ('Ada Lovelace', 'Barbara Liskov', NULL))
+----
+
+query IIII nosort
+SELECT ((a.hired = '1998-06-11') AND (b.unit_price <> 11.98)), (EXISTS (SELECT 1 FROM people s WHERE (s.hired = '2003-02-14'))), (b.quantity = 5), COUNT(*) OVER (ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired, b.order_id, b.person_id, b.product, b.quantity, b.unit_price, b.ordered_on) FROM people a RIGHT JOIN orders b ON a.id = b.person_id AND (a.age > 41.00) WHERE (a.age <= (SELECT AVG(s.quantity) FROM orders s)) ORDER BY 1, 2, 3, 4
+----
+
+query TII rowsort
+SELECT a.hired, SUM(a.age), COUNT(*) FROM people a WHERE (a.city BETWEEN 'Cambridge' AND 'Hampton') GROUP BY a.hired
+----
+2005-03-30
+39
+1
+2008-09-22
+44
+1
+
+query TRII nosort
+SELECT a.name, (a.score * a.score), (a.active = TRUE), SUM(a.salary) OVER (ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired) FROM people a WHERE (a.city BETWEEN 'Austin' AND 'Palo Alto') ORDER BY 1, 2, 3, 4 DESC
+----
+Ada Lovelace
+90.250
+1
+185000
+Alan Turing
+NULL
+1
+555000
+Barbara Liskov
+90.250
+1
+925000
+Donald Knuth
+98.010
+0
+1080000
+Edsger Dijkstra
+49.000
+0
+724000
+Grace Hopper
+68.062
+1
+377000
+Katherine Johnson
+77.440
+1
+1222000
+Margaret Hamilton
+82.810
+1
+1398000
+Tim Berners-Lee
+NULL
+1
+1586000
+
+query ITT nosort
+SELECT DISTINCT (CAST(a.quantity AS BIGINT) - a.person_id), (a.product || '-' || a.product), CAST(a.order_id AS TEXT) FROM orders a WHERE (NOT EXISTS (SELECT 1 FROM people s WHERE (s.id < 7) AND s.id = a.person_id)) ORDER BY 1, 2, 3 DESC
+----
+-8
+desk-desk
+1012
+-8
+laptop-laptop
+1008
+-6
+desk-desk
+1004
+-3
+cable-cable
+1010
+
+query ITI nosort
+SELECT (a.id >= 8), CAST(40 AS TEXT), SUM(a.salary) OVER (ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired) FROM people a WHERE (a.salary < 142000) ORDER BY 1, 2, 3
+----
+
+query ITI rowsort
+SELECT a.quantity, (a.product || '-' || a.product), (a.order_id > 1001) FROM orders a WHERE (NOT ((a.ordered_on = '2024-02-02') AND (a.product <> 'mouse')))
+----
+1
+desk-desk
+1
+1
+keyboard-keyboard
+1
+1
+laptop-laptop
+1
+1
+laptop-laptop
+1
+1
+monitor-monitor
+1
+10
+cable-cable
+1
+2
+desk-desk
+1
+2
+keyboard-keyboard
+0
+2
+monitor-monitor
+1
+2
+mouse-mouse
+1
+4
+mouse-mouse
+1
+5
+cable-cable
+1
+
+query RRII nosort
+SELECT x.unit_price, (x.unit_price / 4), CAST(x.unit_price AS INT), RANK() OVER (ORDER BY x.unit_price) FROM (SELECT unit_price, shipped FROM orders) x WHERE (x.shipped <> TRUE) ORDER BY 1, 2, 3, 4
+----
+7.990
+1.998
+7
+1
+7.990
+1.998
+7
+1
+24.250
+6.062
+24
+3
+612.000
+153.000
+612
+4
+
+query RI nosort
+SELECT ((23 - a.unit_price) * (12 + 20)), RANK() OVER (PARTITION BY a.shipped ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE ((a.order_id <> 1005) AND (a.unit_price < 24.25)) ORDER BY 1, 2 DESC
+----
+480.320
+2
+480.320
+1
+
+query TR rowsort
+SELECT name, score FROM people WHERE ((id < 3) OR (NOT active)) UNION SELECT name, score FROM people WHERE (((id < 4) AND (age = 85)) OR (department BETWEEN 'Engineering' AND 'Research'))
+----
+Ada Lovelace
+9.500
+Alan Turing
+NULL
+Barbara Liskov
+9.500
+Donald Knuth
+9.900
+Edsger Dijkstra
+7.000
+Frances Allen
+8.400
+Grace Hopper
+8.250
+Margaret Hamilton
+9.100
+Tim Berners-Lee
+NULL
+
+query T rowsort
+SELECT DISTINCT a.product FROM orders a WHERE (a.person_id >= 12)
+----
+
+query TTIII rowsort
+SELECT b.city, a.product, COUNT(DISTINCT a.unit_price), MAX(b.id), COUNT(*) FROM orders a LEFT JOIN people b ON a.person_id = b.id GROUP BY b.city, a.product HAVING COUNT(DISTINCT a.unit_price) > 1
+----
+
+query IT rowsort
+SELECT DISTINCT (a.id >= 3), CAST(CAST(a.score AS INT) AS TEXT) FROM people a WHERE (a.score IN (9.10, NULL))
+----
+1
+9
+
+query TT rowsort
+SELECT hired, name FROM people WHERE (name = 'Frances Allen') UNION SELECT hired, name FROM people WHERE ((salary NOT IN (169000, 151000)) OR (score < 9.80))
+----
+1993-04-02
+Frances Allen
+1995-01-15
+Donald Knuth
+1998-06-11
+Tim Berners-Lee
+1999-11-30
+Grace Hopper
+2001-05-01
+Ada Lovelace
+2003-02-14
+Alan Turing
+2005-03-30
+Margaret Hamilton
+2008-09-22
+Katherine Johnson
+2010-07-04
+Barbara Liskov
+NULL
+Edsger Dijkstra
+
+query III rowsort
+SELECT (x.person_id - x.person_id), (8 + x.person_id), ((40 / 4) * (CASE WHEN (x.ordered_on >= '2024-01-17') THEN x.person_id ELSE x.person_id END)) FROM (SELECT person_id, product, ordered_on FROM orders) x WHERE ((x.ordered_on <= '2024-05-30') OR (x.ordered_on <> '2024-05-30'))
+----
+0
+10
+20
+0
+11
+30
+0
+11
+30
+0
+13
+50
+0
+13
+50
+0
+15
+70
+0
+16
+80
+0
+17
+90
+0
+18
+100
+0
+9
+10
+0
+9
+10
+0
+9
+10
+
+query ITT rowsort
+SELECT DISTINCT a.salary, a.city, a.department FROM people a WHERE (a.score NOT IN (7.00, 8.25, 9.90, NULL))
+----
+
+query TIR rowsort
+SELECT (a.ordered_on || '!'), a.person_id, ((a.person_id + a.order_id) - (a.unit_price * a.quantity)) FROM orders a WHERE (a.shipped)
+----
+2024-01-15!
+1
+822.020
+2024-01-17!
+3
+655.500
+2024-02-11!
+7
+399.000
+2024-03-05!
+5
+311.000
+2024-04-01!
+5
+922.010
+2024-05-08!
+3
+963.500
+2024-06-14!
+1
+-887.000
+
+query IIRI rowsort
+SELECT a.order_id, COUNT(*), AVG(a.order_id), MIN(a.shipped) FROM orders a WHERE (a.order_id NOT BETWEEN 1008 AND 1512) GROUP BY a.order_id
+----
+1001
+1
+1001.000
+1
+1002
+1
+1002.000
+1
+1003
+1
+1003.000
+0
+1004
+1
+1004.000
+1
+1005
+1
+1005.000
+1
+1006
+1
+1006.000
+0
+1007
+1
+1007.000
+1
+
+query RI rowsort
+SELECT AVG(a.score), MIN(a.age) FROM people a WHERE (a.hired = '1998-06-11') HAVING SUM(a.id) <> 4
+----
+NULL
+49
+
+query TITI rowsort
+SELECT b.department, MAX(a.id), MIN(b.hired), COUNT(*) FROM people a RIGHT JOIN people b ON a.city = b.city AND (a.salary <> 185000) WHERE (b.salary BETWEEN 155000 AND 201000) GROUP BY b.department
+----
+Engineering
+9
+1999-11-30
+7
+Research
+9
+1995-01-15
+6
+
+query IRT rowsort
+SELECT MAX(b.order_id), SUM(a.unit_price), MIN(b.product) FROM orders a INNER JOIN orders b ON a.ordered_on = b.ordered_on AND (a.ordered_on < '2024-06-14') WHERE (b.order_id IS NOT NULL)
+----
+1010
+3454.460
+cable
+
+query I rowsort
+SELECT (x.city LIKE '%ri%') FROM (SELECT department, salary, city FROM people WHERE (department LIKE '___%')) x WHERE ((x.department BETWEEN 'Analytics' AND 'Research') AND (x.salary >= 176001))
+----
+0
+0
+0
+0
+0
+
+query TTI rowsort
+SELECT a.name, a.department, COUNT(*) FROM people a WHERE (a.age BETWEEN 37 AND 78) GROUP BY a.name, a.department
+----
+Alan Turing
+Research
+1
+Barbara Liskov
+Engineering
+1
+Donald Knuth
+Research
+1
+Edsger Dijkstra
+Research
+1
+Frances Allen
+Analytics
+1
+Grace Hopper
+Engineering
+1
+Katherine Johnson
+Analytics
+1
+Margaret Hamilton
+Engineering
+1
+Tim Berners-Lee
+Research
+1
+
+query TT rowsort
+SELECT a.hired, (CASE WHEN (a.age < 48) THEN a.name ELSE (a.name || '-' || a.department) END) FROM people a LEFT JOIN orders b ON a.id = b.person_id AND (a.id <> 6) WHERE (((a.name < 'Katherine Johnson') AND (a.salary < 169000)) OR (b.product BETWEEN 'keyboard' AND 'monitor'))
+----
+1993-04-02
+Frances Allen-Analytics
+1995-01-15
+Donald Knuth-Research
+1998-06-11
+Tim Berners-Lee-Research
+2001-05-01
+Ada Lovelace
+2001-05-01
+Ada Lovelace
+2003-02-14
+Alan Turing
+2010-07-04
+Barbara Liskov
+2010-07-04
+Barbara Liskov
+
+query IRTR nosort
+SELECT (a.active <> FALSE), CAST((CASE WHEN (a.active = TRUE) THEN a.salary ELSE a.age END) AS FLOAT), a.department, LAG(a.score) OVER (PARTITION BY a.id ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired) FROM people a WHERE (a.id NOT IN (2, 4, 3)) ORDER BY 1, 2, 3, 4
+----
+0
+57.000
+Analytics
+NULL
+0
+61.000
+Research
+NULL
+1
+142000.000
+Analytics
+NULL
+1
+176000.000
+Engineering
+NULL
+1
+185000.000
+Engineering
+NULL
+1
+188000.000
+Research
+NULL
+1
+201000.000
+Engineering
+NULL
+
+query T rowsort
+SELECT DISTINCT a.department FROM people a WHERE (a.hired BETWEEN '1998-06-11' AND '2010-07-04')
+----
+Analytics
+Engineering
+Research
+
+query TRII rowsort
+SELECT b.hired, AVG(a.unit_price), MAX(a.order_id), SUM(a.order_id) FROM orders a JOIN people b ON a.person_id = b.id AND (a.order_id = 1011) GROUP BY b.hired HAVING SUM(a.unit_price) >= 3
+----
+2001-05-01
+1899.000
+1011
+1011
+
+query III rowsort
+SELECT a.shipped, SUM(a.quantity), COUNT(DISTINCT a.quantity) FROM orders a WHERE (a.product >= 'monitor') GROUP BY a.shipped
+----
+0
+4
+1
+1
+5
+2
+
+query ITR rowsort
+SELECT a.order_id, a.ordered_on, SUM(a.unit_price) FROM orders a GROUP BY a.order_id, a.ordered_on HAVING AVG(a.order_id) > 3
+----
+1001
+2024-01-15
+89.990
+1002
+2024-01-17
+349.500
+1003
+2024-02-02
+24.250
+1004
+2024-02-11
+612.000
+1005
+2024-03-05
+349.500
+1006
+2024-03-19
+7.990
+1007
+2024-04-01
+89.990
+1008
+2024-04-22
+1899.000
+1009
+2024-05-08
+24.250
+1010
+2024-05-30
+7.990
+1011
+2024-06-14
+1899.000
+1012
+2024-07-03
+612.000
+
+query T rowsort
+SELECT department FROM people WHERE (hired NOT IN ('2010-07-04', '1995-01-15')) INTERSECT SELECT department FROM people WHERE (score = 9.90)
+----
+Research
+
+query RT rowsort
+SELECT ((44 * 24) + a.score), a.department FROM people a WHERE (a.active = FALSE)
+----
+1063.000
+Research
+1064.400
+Analytics
+1065.900
+Research
+
+query TR rowsort
+SELECT a.city, ((CASE WHEN (a.active <> FALSE) THEN CAST(a.age AS FLOAT) ELSE a.score END) / 6) FROM people a WHERE (a.name < 'Katherine Johnson')
+----
+Austin
+1.167
+London
+6.000
+London
+6.833
+New York
+6.333
+New York
+7.500
+Palo Alto
+1.650
+Yorktown
+1.400
+
+query TIT rowsort
+SELECT b.product, b.quantity, MAX(a.city) FROM people a FULL JOIN orders b ON a.id = b.person_id WHERE (a.score = 4.95) GROUP BY b.product, b.quantity
+----
+
+query IIR rowsort
+SELECT a.id, COUNT(DISTINCT a.active), AVG(a.score) FROM people a WHERE (a.score NOT BETWEEN 10.50 AND 14.25) GROUP BY a.id HAVING COUNT(*) = 4
+----
+
+query T rowsort
+SELECT (CASE WHEN (a.ordered_on < '2024-07-03') THEN a.product ELSE a.product END) FROM orders a WHERE (a.order_id IS NULL)
+----
+
+query IRI rowsort
+SELECT a.order_id, MIN(a.unit_price), COUNT(*) FROM orders a WHERE (a.unit_price IS NULL) GROUP BY a.order_id
+----
+
+query II nosort
+SELECT (x.active <> FALSE), 43 FROM (SELECT city, active FROM people) x WHERE (x.city IS NOT NULL) ORDER BY 1, 2
+----
+0
+43
+0
+43
+0
+43
+1
+43
+1
+43
+1
+43
+1
+43
+1
+43
+1
+43
+1
+43
+
+query IIT nosort
+SELECT (CAST(a.person_id AS BIGINT) + (a.quantity + a.order_id)), ((a.ordered_on <= '2024-02-11') AND (a.quantity >= 2)), a.product FROM orders a WHERE (a.quantity <= 1.50) ORDER BY 1, 2, 3
+----
+1006
+0
+monitor
+1012
+0
+desk
+1013
+0
+keyboard
+1013
+0
+laptop
+1018
+0
+laptop
+
+query III nosort
+SELECT (x.hired NOT BETWEEN '1999-11-30' AND '2005-03-30'), ((CASE WHEN (x.city <= 'New York') THEN x.age ELSE x.age END) / 3), ((x.city LIKE '%on') OR (x.age >= 67)) FROM (SELECT city, active, age, hired FROM people WHERE ((hired = '1999-11-30') AND (id > 10))) x WHERE (x.hired >= '2010-07-04') ORDER BY 1, 2, 3
+----
+
+query IT nosort
+SELECT ((a.age + b.order_id) / 8), a.city FROM people a LEFT JOIN orders b ON a.id = b.person_id WHERE (NOT b.shipped) ORDER BY 1, 2
+----
+129
+London
+131
+Cambridge
+131
+New York
+133
+Yorktown
+
+query T rowsort
+SELECT ordered_on FROM orders WHERE (person_id <= 7) UNION SELECT ordered_on FROM orders WHERE (product >= 'laptop')
+----
+2024-01-15
+2024-01-17
+2024-02-02
+2024-02-11
+2024-03-05
+2024-03-19
+2024-04-01
+2024-04-22
+2024-05-08
+2024-06-14
+
+query IIR rowsort
+SELECT b.id, SUM(b.age), AVG(b.salary) FROM orders a JOIN people b ON a.person_id = b.id AND (b.active) GROUP BY b.id HAVING AVG(b.id) = 2
+----
+2
+45
+192000.000
+
+query I nosort
+SELECT (x.age + x.age) FROM (SELECT age, score, salary FROM people) x WHERE (x.salary = 168999) ORDER BY 1
+----
+
+query IIR rowsort
+SELECT a.active, MIN(a.active), AVG(a.id) FROM people a GROUP BY a.active
+----
+0
+0
+6.667
+1
+1
+5.000
+
+query IRI rowsort
+SELECT (a.age > 37.00), CAST((b.unit_price - 29) AS FLOAT), 30 FROM people a RIGHT JOIN orders b ON a.id = b.person_id AND (a.score >= 4.95) WHERE (a.department IN ('Analytics', 'Engineering', 'Research'))
+----
+0
+-4.750
+30
+0
+1870.000
+30
+0
+60.990
+30
+1
+-21.010
+30
+1
+-21.010
+30
+1
+320.500
+30
+1
+583.000
+30
+1
+583.000
+30
+1
+60.990
+30
+
+query IT rowsort
+SELECT (a.unit_price <> 1899.00), a.product FROM orders a INNER JOIN orders b ON a.order_id = b.order_id AND (a.person_id <> 7) WHERE (a.shipped = TRUE)
+----
+0
+laptop
+1
+keyboard
+1
+keyboard
+1
+monitor
+1
+monitor
+1
+mouse
+
+query I nosort
+SELECT ((a.product = 'laptop') OR (a.person_id >= 10)) FROM orders a WHERE (a.product IN ('mouse', NULL)) ORDER BY 1
+----
+0
+0
+
+query II rowsort
+SELECT CAST(b.person_id AS INT), 10 FROM people a LEFT JOIN orders b ON a.id = b.person_id AND (b.ordered_on < '2024-05-08') WHERE ((a.active = TRUE) OR (a.active NOT IN (TRUE, FALSE)))
+----
+1
+10
+1
+10
+2
+10
+3
+10
+5
+10
+5
+10
+7
+10
+9
+10
+NULL
+10
+
+query RI nosort
+SELECT CAST(4 AS FLOAT), COUNT(*) OVER (PARTITION BY a.shipped ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE (a.order_id = (SELECT SUM(s.person_id) FROM orders s)) ORDER BY 1, 2
+----
+
+query TRR rowsort
+SELECT CAST(CAST((a.score + a.score) AS INT) AS TEXT), a.score, ((a.score + 6) * (a.age + a.salary)) FROM people a WHERE (a.department BETWEEN 'Engineering' AND 'Research')
+----
+14
+7.000
+2197676.000
+16
+8.250
+2736641.250
+18
+9.100
+2658188.900
+19
+9.500
+2868058.000
+19
+9.500
+3116089.000
+19
+9.900
+2465469.900
+NULL
+NULL
+NULL
+NULL
+NULL
+NULL
+
+query TI nosort
+SELECT (CASE WHEN (x.shipped IN (FALSE, TRUE, NULL)) THEN x.product ELSE x.product END), DENSE_RANK() OVER (ORDER BY x.product, x.quantity, x.ordered_on) FROM (SELECT shipped, product, quantity, ordered_on FROM orders) x WHERE (x.quantity > 1.50) ORDER BY 1, 2
+----
+cable
+1
+cable
+2
+desk
+3
+keyboard
+4
+monitor
+5
+mouse
+6
+mouse
+7
+
+query T rowsort
+SELECT a.ordered_on FROM orders a WHERE (a.person_id < 12)
+----
+2024-01-15
+2024-01-17
+2024-02-02
+2024-02-11
+2024-03-05
+2024-03-19
+2024-04-01
+2024-04-22
+2024-05-08
+2024-05-30
+2024-06-14
+2024-07-03
+
+query IT rowsort
+SELECT (x.salary / 3), (CASE WHEN (x.department >= 'Analytics') THEN x.department ELSE CAST(x.id AS TEXT) END) FROM (SELECT salary, id, department FROM people) x WHERE (x.department LIKE '%ch')
+----
+51666
+Research
+56333
+Research
+59333
+Research
+62666
+Research
+
+query III rowsort
+SELECT salary, age, id FROM people WHERE (department LIKE 'En%') UNION SELECT salary, age, id FROM people WHERE (id < 3.50)
+----
+176000
+39
+8
+178000
+41
+3
+185000
+36
+1
+192000
+45
+2
+201000
+38
+5
+
+query TII nosort
+SELECT (a.ordered_on || '!'), (a.shipped = TRUE), (a.product NOT LIKE 'mo%') FROM orders a WHERE (a.ordered_on IS NULL) ORDER BY 1, 2, 3
+----
+
+query IRIR rowsort
+SELECT a.shipped, AVG(a.order_id), MIN(a.shipped), AVG(a.quantity) FROM orders a WHERE ((a.product > 'desk') AND (a.order_id <> 1503)) GROUP BY a.shipped
+----
+0
+1003.000
+0
+4.000
+1
+1005.833
+1
+1.500
+NULL
+1008.000
+NULL
+1.000
+
+query I nosort
+SELECT x.quantity FROM (SELECT unit_price, quantity, person_id FROM orders WHERE (quantity IS NOT NULL)) x WHERE (x.unit_price < 44.99) ORDER BY 1
+----
+2
+4
+5
+10
+
+query IIIRT rowsort
+SELECT a.person_id, a.shipped, COUNT(a.order_id), SUM(a.unit_price), MIN(a.ordered_on) FROM orders a WHERE ((a.order_id > 501.50) OR (a.shipped)) GROUP BY a.person_id, a.shipped
+----
+1
+0
+1
+24.250
+2024-02-02
+1
+1
+2
+1988.990
+2024-01-15
+10
+0
+1
+612.000
+2024-07-03
+2
+0
+1
+7.990
+2024-03-19
+3
+1
+2
+373.750
+2024-01-17
+5
+1
+2
+439.490
+2024-03-05
+7
+1
+1
+612.000
+2024-02-11
+8
+0
+1
+7.990
+2024-05-30
+9
+NULL
+1
+1899.000
+2024-04-22
+
+query IIRI rowsort
+SELECT a.active, COUNT(a.id), AVG(a.age), MIN(a.age) FROM people a WHERE ((a.hired NOT BETWEEN '1993-04-02' AND '2010-07-04') AND (a.department IS NULL)) GROUP BY a.active HAVING AVG(a.age) > 3
+----
+
+query IRI rowsort
+SELECT person_id, unit_price, shipped FROM orders WHERE ((quantity BETWEEN 4 AND 10) OR (order_id NOT IN (1010, 1009))) UNION SELECT person_id, unit_price, shipped FROM orders WHERE (ordered_on <> '2024-04-22')
+----
+1
+1899.000
+1
+1
+24.250
+0
+1
+89.990
+1
+10
+612.000
+0
+2
+7.990
+0
+3
+24.250
+1
+3
+349.500
+1
+5
+349.500
+1
+5
+89.990
+1
+7
+612.000
+1
+8
+7.990
+0
+9
+1899.000
+NULL
+
+query IIRI rowsort
+SELECT b.person_id, a.id, AVG(b.quantity), COUNT(DISTINCT b.shipped) FROM people a LEFT JOIN orders b ON a.id = b.person_id AND (b.product <= 'mouse') WHERE ((a.age IN (38, 49, 36, NULL)) OR (b.order_id IS NOT NULL)) GROUP BY b.person_id, a.id HAVING COUNT(b.ordered_on) < 2
+----
+10
+10
+2.000
+1
+2
+2
+10.000
+1
+7
+7
+1.000
+1
+8
+8
+5.000
+1
+9
+9
+1.000
+0
+
+query IRI rowsort
+SELECT (b.active NOT IN (TRUE, FALSE, NULL)), (CASE WHEN (a.id > 10.00) THEN CAST(a.id AS FLOAT) ELSE a.score END), (CASE WHEN (a.score <= (SELECT SUM(s.age) FROM people s)) THEN a.age ELSE b.age END) FROM people a LEFT JOIN people b ON a.age = b.age WHERE (a.active <> FALSE)
+----
+0
+8.250
+45
+0
+8.800
+44
+0
+9.100
+39
+0
+9.500
+36
+0
+9.500
+38
+0
+NULL
+41
+0
+NULL
+49
+
+query I rowsort
+SELECT (a.order_id IS NOT NULL) FROM orders a WHERE (NOT (a.unit_price NOT IN (349.50, 7.99, NULL)))
+----
+1
+1
+1
+1
+
+query T nosort
+SELECT a.name FROM people a RIGHT JOIN people b ON a.hired = b.hired AND (b.city <= 'Yorktown') WHERE (a.age BETWEEN 44 AND 46) ORDER BY 1
+----
+Grace Hopper
+Katherine Johnson
+
+query TTIR nosort
+SELECT CAST(b.person_id AS TEXT), (b.product || '-' || (CASE WHEN (b.unit_price > 349.50) THEN b.product ELSE b.product END)), (a.ordered_on <> '2024-03-05'), SUM(b.unit_price) OVER (ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on, b.order_id, b.person_id, b.product, b.quantity, b.unit_price, b.ordered_on) FROM orders a RIGHT JOIN orders b ON a.product = b.product WHERE ((a.order_id IS NOT NULL) AND (a.person_id IN (SELECT s.order_id FROM orders s WHERE (s.ordered_on NOT BETWEEN '2024-02-02' AND '2024-05-08')))) ORDER BY 1, 2, 3, 4
+----
+
+query RI rowsort
+SELECT (a.id + a.score), 38 FROM people a WHERE (a.salary <> 169000.00)
+----
+10.250
+38
+10.500
+38
+14.500
+38
+15.800
+38
+15.900
+38
+17.100
+38
+18.400
+38
+NULL
+38
+NULL
+38
+
+query T rowsort
+SELECT a.name FROM people a WHERE (a.salary BETWEEN 192000 AND 301500)
+----
+Barbara Liskov
+Grace Hopper
+
+query ITRI rowsort
+SELECT a.order_id, MAX(a.product), SUM(a.unit_price), MAX(a.shipped) FROM orders a JOIN orders b ON a.order_id = b.order_id GROUP BY a.order_id HAVING SUM(a.person_id) < 1
+----
+
+query I rowsort
+SELECT DISTINCT (a.shipped <> FALSE) FROM orders a WHERE (a.person_id < 5)
+----
+0
+1
+
+query ITI rowsort
+SELECT a.salary, a.hired, MAX(a.id) FROM people a GROUP BY a.salary, a.hired
+----
+142000
+2008-09-22
+7
+151000
+1993-04-02
+10
+155000
+1995-01-15
+6
+169000
+NULL
+4
+176000
+2005-03-30
+8
+178000
+2003-02-14
+3
+185000
+2001-05-01
+1
+188000
+1998-06-11
+9
+192000
+1999-11-30
+2
+201000
+2010-07-04
+5
+
+query TI rowsort
+SELECT (a.hired || '!'), (a.department LIKE '%cs') FROM people a WHERE ((EXISTS (SELECT 1 FROM orders s WHERE ((s.product < 'laptop') AND (s.product <> 'cable')))) OR (a.salary <> 141999.00))
+----
+1993-04-02!
+1
+1995-01-15!
+0
+1998-06-11!
+0
+1999-11-30!
+0
+2001-05-01!
+0
+2003-02-14!
+0
+2005-03-30!
+0
+2008-09-22!
+1
+2010-07-04!
+0
+NULL
+0
+
+query TTRIR rowsort
+SELECT a.product, a.ordered_on, AVG(a.person_id), COUNT(a.ordered_on), AVG(a.unit_price) FROM orders a WHERE (a.ordered_on NOT IN ('2024-01-15', '2024-04-22', '2024-02-11')) GROUP BY a.product, a.ordered_on
+----
+cable
+2024-03-19
+2.000
+1
+7.990
+cable
+2024-05-30
+8.000
+1
+7.990
+desk
+2024-07-03
+10.000
+1
+612.000
+keyboard
+2024-04-01
+5.000
+1
+89.990
+laptop
+2024-06-14
+1.000
+1
+1899.000
+monitor
+2024-01-17
+3.000
+1
+349.500
+monitor
+2024-03-05
+5.000
+1
+349.500
+mouse
+2024-02-02
+1.000
+1
+24.250
+mouse
+2024-05-08
+3.000
+1
+24.250
+
+query RITI nosort
+SELECT (x.score - (12 - x.score)), (x.id <= 9), (x.department || '-' || x.department), COUNT(*) OVER (PARTITION BY x.department ORDER BY x.department, x.score, x.id, x.hired) FROM (SELECT department, score, id, hired FROM people WHERE (hired <= '2008-09-22')) x WHERE (x.score <> 12.60) ORDER BY 1, 2, 3, 4 DESC
+----
+4.500
+1
+Engineering-Engineering
+1
+4.800
+0
+Analytics-Analytics
+1
+5.600
+1
+Analytics-Analytics
+2
+6.200
+1
+Engineering-Engineering
+2
+7.000
+1
+Engineering-Engineering
+3
+7.800
+1
+Research-Research
+1
+
+query T rowsort
+SELECT ordered_on FROM orders WHERE (person_id IS NOT NULL) INTERSECT SELECT ordered_on FROM orders WHERE (unit_price IN (612.00, 349.50, 89.99))
+----
+2024-01-15
+2024-01-17
+2024-02-11
+2024-03-05
+2024-04-01
+2024-07-03
+
+query I rowsort
+SELECT quantity FROM orders WHERE ((quantity BETWEEN 0 AND 1) OR ((ordered_on > '2024-02-11') OR (person_id < 2))) EXCEPT SELECT quantity FROM orders WHERE (quantity > 5.00)
+----
+1
+2
+4
+5
+
+query I rowsort
+SELECT b.salary FROM people a RIGHT JOIN people b ON a.age = b.age AND (b.city LIKE 'Yo%') WHERE (a.city LIKE 'Hampton')
+----
+
+query I rowsort
+SELECT (a.unit_price BETWEEN 8.99 AND 949.50) FROM orders a RIGHT JOIN people b ON a.person_id = b.id AND (a.quantity < 2) WHERE (a.quantity BETWEEN 1 AND 6)
+----
+0
+0
+1
+1
+1
+
+query I rowsort
+SELECT (a.quantity - 24) FROM orders a RIGHT JOIN people b ON a.person_id = b.id WHERE (b.score < 13.20)
+----
+-14
+-19
+-20
+-22
+-22
+-22
+-23
+-23
+-23
+NULL
+NULL
+
+query I nosort
+SELECT 37 FROM people a WHERE (a.id BETWEEN 6 AND 13) ORDER BY 1
+----
+37
+37
+37
+37
+37
+
+query R rowsort
+SELECT AVG(a.unit_price) FROM orders a WHERE (a.person_id > 1)
+----
+439.136
+
+query I rowsort
+SELECT COUNT(*) FROM people a HAVING COUNT(DISTINCT a.hired) <= 2
+----
+
+query ITTI rowsort
+SELECT a.shipped, a.ordered_on, MAX(a.product), COUNT(*) FROM orders a JOIN people b ON a.person_id = b.id WHERE (NOT (b.hired = '1993-04-02')) GROUP BY a.shipped, a.ordered_on
+----
+0
+2024-02-02
+mouse
+1
+0
+2024-03-19
+cable
+1
+0
+2024-05-30
+cable
+1
+1
+2024-01-15
+keyboard
+1
+1
+2024-01-17
+monitor
+1
+1
+2024-02-11
+desk
+1
+1
+2024-03-05
+monitor
+1
+1
+2024-04-01
+keyboard
+1
+1
+2024-05-08
+mouse
+1
+1
+2024-06-14
+laptop
+1
+NULL
+2024-04-22
+laptop
+1
+
+query TTI nosort
+SELECT CAST(31 AS TEXT), a.product, COUNT(*) OVER (ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE (a.quantity NOT IN (5)) ORDER BY 1, 2, 3
+----
+31
+cable
+6
+31
+desk
+4
+31
+desk
+11
+31
+keyboard
+1
+31
+keyboard
+7
+31
+laptop
+8
+31
+laptop
+10
+31
+monitor
+2
+31
+monitor
+5
+31
+mouse
+3
+31
+mouse
+9
+
+query II rowsort
+SELECT MIN(a.quantity), COUNT(*) FROM orders a HAVING COUNT(*) = 2
+----
+
+query TTII nosort
+SELECT a.department, (CASE WHEN (a.hired <> '2001-05-01') THEN a.city ELSE a.name END), (a.id < 6.00), RANK() OVER (ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired) FROM people a WHERE ((a.department LIKE 'Engineering') AND (a.active <> TRUE)) ORDER BY 1, 2, 3, 4
+----
+
+query TTI nosort
+SELECT (a.ordered_on || '!'), CAST(CAST(a.unit_price AS INT) AS TEXT), (CASE WHEN (a.ordered_on > '2024-05-30') THEN 48 ELSE 20 END) FROM orders a WHERE (a.product <> 'desk') ORDER BY 1, 2, 3 DESC
+----
+2024-01-15!
+89
+20
+2024-01-17!
+349
+20
+2024-02-02!
+24
+20
+2024-03-05!
+349
+20
+2024-03-19!
+7
+20
+2024-04-01!
+89
+20
+2024-04-22!
+1899
+20
+2024-05-08!
+24
+20
+2024-05-30!
+7
+20
+2024-06-14!
+1899
+48
+
+query IIIR rowsort
+SELECT b.salary, b.id, COUNT(DISTINCT b.id), AVG(a.unit_price) FROM orders a LEFT JOIN people b ON a.person_id = b.id WHERE (b.id <> 1) GROUP BY b.salary, b.id HAVING COUNT(DISTINCT a.unit_price) <> 3
+----
+142000
+7
+1
+612.000
+151000
+10
+1
+612.000
+176000
+8
+1
+7.990
+178000
+3
+1
+186.875
+188000
+9
+1
+1899.000
+192000
+2
+1
+7.990
+201000
+5
+1
+219.745
+
+query I rowsort
+SELECT quantity FROM orders WHERE (shipped <> FALSE) INTERSECT SELECT quantity FROM orders WHERE (person_id > 12)
+----
+
+query TT rowsort
+SELECT 'x', 'x' FROM (SELECT quantity, person_id FROM orders WHERE (shipped IS NULL)) x WHERE (x.person_id NOT IN (3, NULL))
+----
+
+query II rowsort
+SELECT (x.quantity * (CASE WHEN (x.quantity > 6) THEN x.quantity ELSE x.quantity END)), (x.quantity = 1) FROM (SELECT product, quantity FROM orders WHERE ((unit_price < 7.99) OR (shipped <> FALSE))) x WHERE (x.product IN ('mouse', 'cable', 'desk', NULL))
+----
+1
+1
+4
+0
+
+query IRI rowsort
+SELECT a.age, MIN(a.score), COUNT(*) FROM people a GROUP BY a.age
+----
+36
+9.500
+1
+38
+9.500
+1
+39
+9.100
+1
+41
+NULL
+1
+44
+8.800
+1
+45
+8.250
+1
+49
+NULL
+1
+52
+7.000
+1
+57
+8.400
+1
+61
+9.900
+1
+
+query IT rowsort
+SELECT (a.order_id BETWEEN 502 AND 1003), a.ordered_on FROM orders a WHERE (a.product BETWEEN 'laptop' AND 'monitor')
+----
+0
+2024-03-05
+0
+2024-04-22
+0
+2024-06-14
+1
+2024-01-17
+
+query IRRI rowsort
+SELECT a.shipped, AVG(a.unit_price), MAX(a.unit_price), MAX(a.person_id) FROM orders a GROUP BY a.shipped HAVING SUM(DISTINCT a.order_id) >= 1
+----
+0
+163.058
+612.000
+10
+1
+487.747
+1899.000
+7
+NULL
+1899.000
+1899.000
+9
+
+query TRI rowsort
+SELECT CAST(a.person_id AS TEXT), a.unit_price, (a.product < 'cable') FROM orders a WHERE ((a.ordered_on <= '2024-01-17') AND (a.order_id <= 1008.00))
+----
+1
+89.990
+0
+3
+349.500
+0
+
+query RIT rowsort
+SELECT unit_price, order_id, product FROM orders WHERE (shipped = FALSE) UNION ALL SELECT unit_price, order_id, product FROM orders WHERE (NOT ((product = 'cable') AND (shipped <> TRUE)))
+----
+1899.000
+1008
+laptop
+1899.000
+1011
+laptop
+24.250
+1003
+mouse
+24.250
+1003
+mouse
+24.250
+1009
+mouse
+349.500
+1002
+monitor
+349.500
+1005
+monitor
+612.000
+1004
+desk
+612.000
+1012
+desk
+612.000
+1012
+desk
+7.990
+1006
+cable
+7.990
+1010
+cable
+89.990
+1001
+keyboard
+89.990
+1007
+keyboard
+
+query IIR rowsort
+SELECT (16 + (30 / 8)), (CASE WHEN (a.age = 44.00) THEN a.id ELSE a.id END), (a.id + a.score) FROM people a WHERE (a.salary BETWEEN 151000 AND 192000)
+----
+19
+1
+10.500
+19
+10
+18.400
+19
+2
+10.250
+19
+3
+NULL
+19
+4
+11.000
+19
+6
+15.900
+19
+8
+17.100
+19
+9
+NULL
+
+query TR rowsort
+SELECT b.hired, SUM(b.score) FROM orders a FULL JOIN people b ON a.person_id = b.id GROUP BY b.hired HAVING SUM(b.score) >= 4
+----
+1993-04-02
+8.400
+1995-01-15
+9.900
+1999-11-30
+8.250
+2001-05-01
+28.500
+2005-03-30
+9.100
+2008-09-22
+8.800
+2010-07-04
+19.000
+NULL
+7.000
+
+query RII rowsort
+SELECT (x.age + CAST(x.age AS FLOAT)), (x.department <> 'Engineering'), x.age FROM (SELECT department, age FROM people) x WHERE (x.department NOT BETWEEN 'Analytics' AND 'Engineering')
+----
+104.000
+1
+52
+122.000
+1
+61
+82.000
+1
+41
+98.000
+1
+49
+
+query TII rowsort
+SELECT a.name, COUNT(DISTINCT a.id), COUNT(a.id) FROM people a GROUP BY a.name HAVING COUNT(DISTINCT a.department) >= 3
+----
+
+query II rowsort
+SELECT person_id, shipped FROM orders WHERE (unit_price NOT BETWEEN 1899.00 AND 1900.00) INTERSECT SELECT person_id, shipped FROM orders WHERE (quantity > 10)
+----
+
+query TTTI nosort
+SELECT (b.product || '-' || a.city), (CASE WHEN (b.unit_price <= 12.12) THEN a.name ELSE b.product END), b.product, RANK() OVER (ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired, b.order_id, b.person_id, b.product, b.quantity, b.unit_price, b.ordered_on) FROM people a RIGHT JOIN orders b ON a.id = b.person_id WHERE (a.city IS NULL) ORDER BY 1, 2, 3, 4
+----
+
+query TI nosort
+SELECT (x.name || '-' || CAST(45 AS TEXT)), RANK() OVER (PARTITION BY x.active ORDER BY x.hired, x.name, x.department) FROM (SELECT hired, name, department, active FROM people) x WHERE (x.hired = '2008-09-22') ORDER BY 1, 2
+----
+Katherine Johnson-45
+1
+
+query TT rowsort
+SELECT (CASE WHEN (a.order_id <= 1510) THEN a.product ELSE a.product END), (a.product || '-' || a.product) FROM orders a WHERE (a.order_id BETWEEN 1001 AND 1010)
+----
+cable
+cable-cable
+cable
+cable-cable
+desk
+desk-desk
+keyboard
+keyboard-keyboard
+keyboard
+keyboard-keyboard
+laptop
+laptop-laptop
+monitor
+monitor-monitor
+monitor
+monitor-monitor
+mouse
+mouse-mouse
+mouse
+mouse-mouse
+
+query II rowsort
+SELECT age, active FROM people WHERE (((department <= 'Research') AND (score <> 4.55)) OR (department NOT BETWEEN 'Engineering' AND 'Research')) EXCEPT SELECT age, active FROM people WHERE ((department = 'Engineering') AND (score BETWEEN 7.25 AND 8.80))
+----
+36
+1
+38
+1
+39
+1
+44
+1
+52
+0
+57
+0
+61
+0
+
+query III rowsort
+SELECT b.id, MIN(b.age), MIN(a.order_id) FROM orders a FULL JOIN people b ON a.person_id = b.id WHERE (b.hired BETWEEN '2001-05-01' AND '2003-02-14') GROUP BY b.id HAVING COUNT(*) > 1
+----
+1
+36
+1001
+3
+41
+1002
+
+query IR rowsort
+SELECT CAST(a.order_id AS INT), a.unit_price FROM orders a WHERE (NOT EXISTS (SELECT 1 FROM people s WHERE (s.department NOT IN ('Analytics', 'Research')) AND s.id = a.person_id))
+----
+1002
+349.500
+1004
+612.000
+1008
+1899.000
+1009
+24.250
+1012
+612.000
+
+query TIT rowsort
+SELECT DISTINCT a.city, (a.hired >= '2003-02-14'), a.hired FROM people a WHERE (a.score >= 7.40)
+----
+Cambridge
+1
+2005-03-30
+Hampton
+1
+2008-09-22
+London
+0
+2001-05-01
+New York
+0
+1999-11-30
+New York
+1
+2010-07-04
+Palo Alto
+0
+1995-01-15
+Yorktown
+0
+1993-04-02
+
+query T rowsort
+SELECT b.department FROM orders a LEFT JOIN people b ON a.person_id = b.id AND (a.unit_price >= 349.50) WHERE (b.hired IN ('1999-11-30', '2008-09-22', '1998-06-11', NULL))
+----
+Analytics
+Research
+
+query III rowsort
+SELECT a.shipped, a.person_id, MIN(a.shipped) FROM orders a GROUP BY a.shipped, a.person_id
+----
+0
+1
+0
+0
+10
+0
+0
+2
+0
+0
+8
+0
+1
+1
+1
+1
+3
+1
+1
+5
+1
+1
+7
+1
+NULL
+9
+NULL
+
+query R nosort
+SELECT ((b.salary / 3) + (a.person_id - b.score)) FROM orders a RIGHT JOIN people b ON a.person_id = b.id WHERE (NOT (b.score >= 7.00)) ORDER BY 1
+----
+
+query TTT rowsort
+SELECT a.department, (b.department || '-' || b.name), (CASE WHEN (a.city < 'Yorktown') THEN (CASE WHEN (b.age >= 52.00) THEN b.name ELSE b.city END) ELSE (CASE WHEN (a.name NOT LIKE '%on') THEN b.name ELSE b.city END) END) FROM people a JOIN people b ON a.age = b.age WHERE (b.name >= 'Alan Turing')
+----
+Analytics
+Analytics-Frances Allen
+Frances Allen
+Analytics
+Analytics-Katherine Johnson
+Hampton
+Engineering
+Engineering-Barbara Liskov
+New York
+Engineering
+Engineering-Grace Hopper
+New York
+Engineering
+Engineering-Margaret Hamilton
+Cambridge
+Research
+Research-Alan Turing
+London
+Research
+Research-Donald Knuth
+Donald Knuth
+Research
+Research-Edsger Dijkstra
+Edsger Dijkstra
+Research
+Research-Tim Berners-Lee
+London
+
+query RI rowsort
+SELECT MIN(a.score), COUNT(DISTINCT a.city) FROM people a HAVING COUNT(*) > 4
+----
+7.000
+7
+
+query I rowsort
+SELECT a.age FROM people a WHERE ((a.hired < '2001-05-01') AND (a.name LIKE '___%'))
+----
+45
+49
+57
+61
+
+query TI rowsort
+SELECT a.department, SUM(DISTINCT a.salary) FROM people a GROUP BY a.department
+----
+Analytics
+293000
+Engineering
+754000
+Research
+690000
+
+query I rowsort
+SELECT a.quantity FROM orders a WHERE (a.person_id > 11)
+----
+
+query TIT rowsort
+SELECT (CASE WHEN (x.city LIKE 'Lo%') THEN x.department ELSE x.city END), CAST((31 * x.id) AS BIGINT), CAST(2 AS TEXT) FROM (SELECT department, id, city, name FROM people WHERE ((hired > '1995-01-15') AND (city < 'London'))) x WHERE (x.city BETWEEN 'Hampton' AND 'New York')
+----
+Hampton
+217
+2
+
+query II nosort
+SELECT (CASE WHEN (a.active <> TRUE) THEN a.age ELSE b.id END), RANK() OVER (ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired, b.id, b.name, b.age, b.city, b.department, b.salary, b.score, b.hired) FROM people a FULL JOIN people b ON a.department = b.department WHERE (a.id > 6.00) ORDER BY 1, 2 DESC
+----
+1
+3
+2
+4
+3
+7
+4
+8
+5
+5
+6
+9
+7
+1
+8
+6
+9
+10
+10
+2
+57
+12
+57
+11
+
+query I rowsort
+SELECT ((CASE WHEN (NOT a.active) THEN 11 ELSE a.salary END) * (20 + a.salary)) FROM people a WHERE (a.score > 9.10)
+----
+1705220
+34228700000
+40405020000
+
+query TIIR rowsort
+SELECT a.product, MIN(a.person_id), COUNT(*), AVG(a.order_id) FROM orders a GROUP BY a.product HAVING SUM(a.unit_price) <= 4
+----
+
+query II rowsort
+SELECT a.order_id, COUNT(a.shipped) FROM orders a WHERE (a.quantity BETWEEN 1 AND 5) GROUP BY a.order_id
+----
+1001
+1
+1002
+1
+1003
+1
+1004
+1
+1005
+1
+1007
+1
+1008
+0
+1009
+1
+1010
+1
+1011
+1
+1012
+1
+
+query I rowsort
+SELECT (46 * a.age) FROM people a WHERE ((a.city BETWEEN 'Palo Alto' AND 'Yorktown') OR (((a.hired <= '1993-04-02') AND (a.department >= 'Engineering')) OR (a.id IN (6, 8))))
+----
+1794
+2622
+2806
+
+query T rowsort
+SELECT (b.hired || '!') FROM orders a RIGHT JOIN people b ON a.person_id = b.id WHERE (b.age < 66.00)
+----
+1993-04-02!
+1995-01-15!
+1998-06-11!
+1999-11-30!
+2001-05-01!
+2001-05-01!
+2001-05-01!
+2003-02-14!
+2003-02-14!
+2005-03-30!
+2008-09-22!
+2010-07-04!
+2010-07-04!
+NULL
+
+query RI rowsort
+SELECT SUM(a.unit_price), SUM(a.person_id) FROM orders a WHERE (NOT (a.quantity >= 2))
+----
+4849.490
+25
+
+query TI nosort
+SELECT a.product, ROW_NUMBER() OVER (ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE ((NOT a.shipped) AND (a.ordered_on NOT IN ('2024-05-30'))) ORDER BY 1, 2
+----
+cable
+2
+desk
+3
+mouse
+1
+
+query I nosort
+SELECT DISTINCT (x.order_id IS NULL) FROM (SELECT unit_price, order_id FROM orders WHERE ((product LIKE '%rd') OR (ordered_on <= '2024-05-08'))) x WHERE (x.unit_price IN (1899.00, 612.00, 24.25)) ORDER BY 1
+----
+0
+
+query RR rowsort
+SELECT (CASE WHEN (x.unit_price IS NULL) THEN CAST(41 AS FLOAT) ELSE (x.order_id - x.unit_price) END), (x.order_id * x.unit_price) FROM (SELECT order_id, unit_price, ordered_on, shipped FROM orders WHERE ((product LIKE '%sk') OR (ordered_on <= '2024-07-03'))) x WHERE (x.order_id = 1004)
+----
+392.000
+614448.000
+
+query T nosort
+SELECT CAST(CAST(a.score AS INT) AS TEXT) FROM people a WHERE (NOT (a.city IS NOT NULL)) ORDER BY 1
+----
+
+query RI nosort
+SELECT (CASE WHEN (a.score < 9.10) THEN a.score ELSE CAST(a.id AS FLOAT) END), (a.id * a.id) FROM people a WHERE (a.age > 22) ORDER BY 1, 2
+----
+1.000
+1
+3.000
+9
+5.000
+25
+6.000
+36
+7.000
+16
+8.000
+64
+8.250
+4
+8.400
+100
+8.800
+49
+9.000
+81
+
+query I rowsort
+SELECT (a.age - a.id) FROM people a WHERE ((a.name NOT LIKE '%on') OR (a.name NOT LIKE 'Grace Hopper'))
+----
+31
+33
+35
+37
+38
+40
+43
+47
+48
+55
+
+query ITI nosort
+SELECT 31, x.department, ROW_NUMBER() OVER (PARTITION BY x.department ORDER BY x.department) FROM (SELECT department, active FROM people WHERE (department IN ('Analytics', NULL))) x WHERE (x.department <> 'Research') ORDER BY 1, 2, 3 DESC
+----
+31
+Analytics
+2
+31
+Analytics
+1
+
+query TII rowsort
+SELECT (a.ordered_on || '!'), b.id, a.order_id FROM orders a RIGHT JOIN people b ON a.person_id = b.id AND (b.score >= 8.80) WHERE (b.name <= 'Margaret Hamilton')
+----
+2024-01-15!
+1
+1001
+2024-02-02!
+1
+1003
+2024-02-11!
+7
+1004
+2024-03-05!
+5
+1005
+2024-04-01!
+5
+1007
+2024-05-30!
+8
+1010
+2024-06-14!
+1
+1011
+NULL
+10
+NULL
+NULL
+2
+NULL
+NULL
+3
+NULL
+NULL
+4
+NULL
+NULL
+6
+NULL
+
+query II rowsort
+SELECT DISTINCT a.quantity, 14 FROM orders a WHERE ((a.shipped IN (TRUE, FALSE)) AND (a.unit_price = 918.00))
+----
+
+query I rowsort
+SELECT (b.city <= 'Hampton') FROM people a JOIN people b ON a.salary = b.salary WHERE ((b.salary < 226500.00) AND (a.score IS NOT NULL))
+----
+0
+0
+0
+0
+0
+1
+1
+1
+
+query TRR rowsort
+SELECT a.ordered_on, MAX(a.unit_price), MIN(a.unit_price) FROM orders a GROUP BY a.ordered_on HAVING COUNT(a.order_id) <= 2
+----
+2024-01-15
+89.990
+89.990
+2024-01-17
+349.500
+349.500
+2024-02-02
+24.250
+24.250
+2024-02-11
+612.000
+612.000
+2024-03-05
+349.500
+349.500
+2024-03-19
+7.990
+7.990
+2024-04-01
+89.990
+89.990
+2024-04-22
+1899.000
+1899.000
+2024-05-08
+24.250
+24.250
+2024-05-30
+7.990
+7.990
+2024-06-14
+1899.000
+1899.000
+2024-07-03
+612.000
+612.000
+
+query IIR rowsort
+SELECT (CAST(35 AS INT) - (8 / 8)), (a.shipped = FALSE), a.unit_price FROM orders a RIGHT JOIN orders b ON a.order_id = b.order_id WHERE ((a.unit_price > 350.50) OR (a.quantity NOT BETWEEN 2 AND 3))
+----
+34
+0
+1899.000
+34
+0
+349.500
+34
+0
+612.000
+34
+0
+89.990
+34
+1
+24.250
+34
+1
+612.000
+34
+1
+7.990
+34
+1
+7.990
+34
+NULL
+1899.000
+
+query TITI nosort
+SELECT a.city, (27 - a.age), (a.name || '-' || a.department), LAG(a.salary) OVER (ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired) FROM people a WHERE (a.name BETWEEN 'Frances Allen' AND 'Tim Berners-Lee') ORDER BY 1, 2, 3, 4
+----
+Cambridge
+-12
+Margaret Hamilton-Engineering
+142000
+Hampton
+-17
+Katherine Johnson-Analytics
+192000
+London
+-22
+Tim Berners-Lee-Research
+176000
+New York
+-18
+Grace Hopper-Engineering
+NULL
+Yorktown
+-30
+Frances Allen-Analytics
+188000
+
+query ITT rowsort
+SELECT (x.department >= 'Engineering'), CAST(x.salary AS TEXT), CAST(13 AS TEXT) FROM (SELECT department, salary, hired FROM people) x WHERE (x.salary = 226500.00)
+----
+
+query IIT rowsort
+SELECT a.id, 43, a.name FROM people a WHERE ((a.active <> TRUE) OR (a.city LIKE 'Austin'))
+----
+10
+43
+Frances Allen
+4
+43
+Edsger Dijkstra
+6
+43
+Donald Knuth
+
+query II rowsort
+SELECT ((a.person_id >= 11.00) AND (a.unit_price <= 949.50)), ((a.person_id - a.person_id) / 3) FROM orders a INNER JOIN people b ON a.person_id = b.id WHERE ((b.id >= 1) AND (b.hired <> '2003-02-14'))
+----
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+
+query I nosort
+SELECT (CASE WHEN (x.order_id <> 1005) THEN x.quantity ELSE x.quantity END) FROM (SELECT ordered_on, order_id, quantity FROM orders WHERE (quantity < 15)) x WHERE (x.quantity IS NULL) ORDER BY 1
+----
+
+query TII rowsort
+SELECT a.product, (38 * a.order_id), CAST(a.unit_price AS INT) FROM orders a WHERE (a.order_id <> 505)
+----
+cable
+38228
+7
+cable
+38380
+7
+desk
+38152
+612
+desk
+38456
+612
+keyboard
+38038
+89
+keyboard
+38266
+89
+laptop
+38304
+1899
+laptop
+38418
+1899
+monitor
+38076
+349
+monitor
+38190
+349
+mouse
+38114
+24
+mouse
+38342
+24
+
+query III rowsort
+SELECT a.salary, a.age, SUM(DISTINCT a.id) FROM people a GROUP BY a.salary, a.age HAVING COUNT(*) <> 3
+----
+142000
+44
+7
+151000
+57
+10
+155000
+61
+6
+169000
+52
+4
+176000
+39
+8
+178000
+41
+3
+185000
+36
+1
+188000
+49
+9
+192000
+45
+2
+201000
+38
+5
+
+query III rowsort
+SELECT DISTINCT (x.unit_price > 89.99), (CASE WHEN (x.order_id = 1002.00) THEN x.order_id ELSE x.order_id END), 5 FROM (SELECT ordered_on, unit_price, order_id FROM orders) x WHERE (((x.unit_price NOT IN (349.50)) OR (x.order_id NOT BETWEEN 1006 AND 1010)) AND (x.ordered_on IS NOT NULL))
+----
+0
+1001
+5
+0
+1003
+5
+0
+1006
+5
+0
+1007
+5
+0
+1009
+5
+0
+1010
+5
+1
+1002
+5
+1
+1004
+5
+1
+1005
+5
+1
+1008
+5
+1
+1011
+5
+1
+1012
+5
+
+query II rowsort
+SELECT (x.salary <> 176000), (x.name IS NULL) FROM (SELECT salary, active, name FROM people) x WHERE (x.active)
+----
+0
+0
+1
+0
+1
+0
+1
+0
+1
+0
+1
+0
+1
+0
+
+query IRI rowsort
+SELECT order_id, unit_price, person_id FROM orders WHERE (person_id > 15.00) UNION SELECT order_id, unit_price, person_id FROM orders WHERE (person_id IN (1, 8, 3))
+----
+1001
+89.990
+1
+1002
+349.500
+3
+1003
+24.250
+1
+1009
+24.250
+3
+1010
+7.990
+8
+1011
+1899.000
+1
+
+query T rowsort
+SELECT DISTINCT (a.department || '-' || a.name) FROM people a WHERE (a.name BETWEEN 'Frances Allen' AND 'Katherine Johnson')
+----
+Analytics-Frances Allen
+Analytics-Katherine Johnson
+Engineering-Grace Hopper
+
+query RIII nosort
+SELECT ((b.id - b.score) / 8), (a.shipped), ((a.quantity + b.id) - 34), ROW_NUMBER() OVER (PARTITION BY a.shipped ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on, b.id, b.name, b.age, b.city, b.department, b.salary, b.score, b.hired) FROM orders a JOIN people b ON a.person_id = b.id AND (b.name <> 'Alan Turing') WHERE (b.score < 10.90) ORDER BY 1, 2, 3, 4 DESC
+----
+-1.062
+0
+-29
+1
+-1.062
+1
+-32
+5
+-1.062
+1
+-31
+1
+-0.781
+0
+-22
+2
+-0.562
+1
+-28
+4
+-0.562
+1
+-27
+3
+-0.225
+1
+-26
+2
+-0.137
+0
+-21
+3
+0.200
+0
+-22
+4
+
+query RTT nosort
+SELECT (a.order_id * a.unit_price), a.ordered_on, (a.product || '-' || (a.product || '-' || a.product)) FROM orders a WHERE (a.order_id > 1003) ORDER BY 1, 2, 3
+----
+8037.940
+2024-03-19
+cable-cable-cable
+8069.900
+2024-05-30
+cable-cable-cable
+24468.250
+2024-05-08
+mouse-mouse-mouse
+90619.930
+2024-04-01
+keyboard-keyboard-keyboard
+351247.500
+2024-03-05
+monitor-monitor-monitor
+614448.000
+2024-02-11
+desk-desk-desk
+619344.000
+2024-07-03
+desk-desk-desk
+1914192.000
+2024-04-22
+laptop-laptop-laptop
+1919889.000
+2024-06-14
+laptop-laptop-laptop
+
+query I nosort
+SELECT (x.order_id * 13) FROM (SELECT order_id, person_id, ordered_on, product FROM orders WHERE ((ordered_on >= '2024-05-08') OR (quantity >= 4.00))) x WHERE (x.order_id IS NOT NULL) ORDER BY 1
+----
+13039
+13078
+13117
+13130
+13143
+13156
+
+query RIT rowsort
+SELECT DISTINCT (CAST(a.unit_price AS FLOAT) * CAST(a.person_id AS FLOAT)), (CASE WHEN (EXISTS (SELECT 1 FROM people s WHERE (s.score NOT IN (9.10, NULL)))) THEN (a.order_id - 37) ELSE (a.person_id / 2) END), a.ordered_on FROM orders a WHERE (a.unit_price NOT BETWEEN 306.00 AND 349.50)
+----
+15.980
+1
+2024-03-19
+17091.000
+4
+2024-04-22
+1899.000
+0
+2024-06-14
+24.250
+0
+2024-02-02
+4284.000
+3
+2024-02-11
+449.950
+2
+2024-04-01
+6120.000
+5
+2024-07-03
+63.920
+4
+2024-05-30
+72.750
+1
+2024-05-08
+89.990
+0
+2024-01-15
+
+query R nosort
+SELECT CAST(x.salary AS FLOAT) FROM (SELECT salary, id, age, city FROM people WHERE ((hired > '1995-01-15') AND (department <> 'Research'))) x WHERE ((x.age NOT BETWEEN 50 AND 61) AND (x.age BETWEEN 78 AND 91)) ORDER BY 1 DESC
+----
+
+query T rowsort
+SELECT (a.product || '-' || a.product) FROM orders a WHERE (a.quantity <= 15)
+----
+cable-cable
+cable-cable
+desk-desk
+desk-desk
+keyboard-keyboard
+keyboard-keyboard
+laptop-laptop
+laptop-laptop
+monitor-monitor
+monitor-monitor
+mouse-mouse
+mouse-mouse
+
+query TI rowsort
+SELECT CAST((a.salary * 16) AS TEXT), a.age FROM people a WHERE (a.age IN (49))
+----
+3008000
+49
+
+query ITI rowsort
+SELECT COUNT(*), MAX(a.product), COUNT(DISTINCT a.order_id) FROM orders a WHERE (a.quantity <> 5.00)
+----
+11
+mouse
+11
+
+query TIR rowsort
+SELECT (a.hired || '!'), a.salary, ((7 / 6) * CAST(a.id AS FLOAT)) FROM people a WHERE ((a.id <> 4) OR (a.name = 'Frances Allen'))
+----
+1993-04-02!
+151000
+10.000
+1995-01-15!
+155000
+6.000
+1998-06-11!
+188000
+9.000
+1999-11-30!
+192000
+2.000
+2001-05-01!
+185000
+1.000
+2003-02-14!
+178000
+3.000
+2005-03-30!
+176000
+8.000
+2008-09-22!
+142000
+7.000
+2010-07-04!
+201000
+5.000
+
+query IR rowsort
+SELECT SUM(DISTINCT a.quantity), SUM(a.unit_price) FROM orders a HAVING COUNT(a.unit_price) > 3
+----
+22
+5965.460
+
+query IIII rowsort
+SELECT a.quantity, SUM(b.age), COUNT(b.salary), COUNT(*) FROM orders a JOIN people b ON a.person_id = b.id GROUP BY a.quantity
+----
+1
+208
+5
+5
+10
+45
+1
+1
+2
+172
+4
+4
+4
+36
+1
+1
+5
+39
+1
+1
+
+query III nosort
+SELECT (a.id - a.salary), (a.hired <= '1995-01-15'), (CASE WHEN (a.name IS NULL) THEN 11 ELSE a.id END) FROM people a WHERE (a.age = 58.00) ORDER BY 1, 2, 3
+----
+
+query I rowsort
+SELECT MAX(a.age) FROM people a
+----
+61
+
+query I rowsort
+SELECT ((a.quantity - a.order_id) * (22 / 3)) FROM orders a FULL JOIN people b ON a.person_id = b.id AND (a.unit_price < 2848.50) WHERE ((a.person_id <> 1) OR (a.unit_price = 918.00))
+----
+-6972
+-7007
+-7021
+-7021
+-7035
+-7042
+-7049
+-7049
+-7070
+
+query TIR rowsort
+SELECT a.hired, a.age, AVG(b.salary) FROM people a RIGHT JOIN people b ON a.age = b.age GROUP BY a.hired, a.age HAVING AVG(a.salary) > 2
+----
+1993-04-02
+57
+151000.000
+1995-01-15
+61
+155000.000
+1998-06-11
+49
+188000.000
+1999-11-30
+45
+192000.000
+2001-05-01
+36
+185000.000
+2003-02-14
+41
+178000.000
+2005-03-30
+39
+176000.000
+2008-09-22
+44
+142000.000
+2010-07-04
+38
+201000.000
+NULL
+52
+169000.000
+
+query TI rowsort
+SELECT a.department, a.age FROM people a WHERE ((NOT (a.city IS NOT NULL)) AND ((a.department IS NULL) OR (a.active)))
+----
+
+query I rowsort
+SELECT COUNT(a.order_id) FROM orders a
+----
+12
+
+query TITRT rowsort
+SELECT a.product, a.person_id, MIN(a.product), AVG(a.unit_price), MIN(a.ordered_on) FROM orders a GROUP BY a.product, a.person_id
+----
+cable
+2
+cable
+7.990
+2024-03-19
+cable
+8
+cable
+7.990
+2024-05-30
+desk
+10
+desk
+612.000
+2024-07-03
+desk
+7
+desk
+612.000
+2024-02-11
+keyboard
+1
+keyboard
+89.990
+2024-01-15
+keyboard
+5
+keyboard
+89.990
+2024-04-01
+laptop
+1
+laptop
+1899.000
+2024-06-14
+laptop
+9
+laptop
+1899.000
+2024-04-22
+monitor
+3
+monitor
+349.500
+2024-01-17
+monitor
+5
+monitor
+349.500
+2024-03-05
+mouse
+1
+mouse
+24.250
+2024-02-02
+mouse
+3
+mouse
+24.250
+2024-05-08
+
+query I rowsort
+SELECT (a.quantity + 46) FROM orders a WHERE (NOT (a.quantity >= 10))
+----
+47
+47
+47
+47
+47
+48
+48
+48
+48
+50
+51
+
+query TI rowsort
+SELECT DISTINCT a.product, ((11 / 2) * (CASE WHEN (a.order_id > 505) THEN a.quantity ELSE 9 END)) FROM orders a WHERE (EXISTS (SELECT 1 FROM people s WHERE (s.salary BETWEEN 201000 AND 253500) AND s.id = a.person_id))
+----
+keyboard
+5
+monitor
+10
+
+query RRI rowsort
+SELECT ((CASE WHEN (a.id < 3) THEN a.score ELSE CAST(19 AS FLOAT) END) / 2), (a.id + (CASE WHEN (a.name < 'Donald Knuth') THEN a.score ELSE CAST(a.id AS FLOAT) END)), a.age FROM people a WHERE (NOT (a.active <> TRUE))
+----
+4.125
+4.000
+45
+4.750
+10.500
+36
+9.500
+14.000
+44
+9.500
+14.500
+38
+9.500
+16.000
+39
+9.500
+18.000
+49
+9.500
+NULL
+41
+
+query II rowsort
+SELECT a.salary, COUNT(a.age) FROM people a GROUP BY a.salary
+----
+142000
+1
+151000
+1
+155000
+1
+169000
+1
+176000
+1
+178000
+1
+185000
+1
+188000
+1
+192000
+1
+201000
+1
+
+query II rowsort
+SELECT b.quantity, SUM(DISTINCT b.order_id) FROM people a INNER JOIN orders b ON a.id = b.person_id WHERE (b.unit_price <> 1899.00) GROUP BY b.quantity
+----
+1
+3013
+10
+1006
+2
+4027
+4
+1003
+5
+1010
+
+query IRII nosort
+SELECT 40, (CASE WHEN (x.ordered_on > '2024-01-15') THEN x.unit_price ELSE x.unit_price END), (x.ordered_on = '2024-05-30'), COUNT(*) OVER (PARTITION BY x.product ORDER BY x.unit_price, x.product, x.person_id, x.ordered_on) FROM (SELECT unit_price, product, person_id, ordered_on FROM orders) x WHERE (x.person_id BETWEEN 3 AND 9) ORDER BY 1, 2, 3, 4
+----
+40
+7.990
+1
+1
+40
+24.250
+0
+1
+40
+89.990
+0
+1
+40
+349.500
+0
+1
+40
+349.500
+0
+2
+40
+612.000
+0
+1
+40
+1899.000
+0
+1
+
+query IIRRI rowsort
+SELECT b.order_id, b.quantity, AVG(b.order_id), SUM(DISTINCT b.unit_price), COUNT(b.order_id) FROM people a FULL JOIN orders b ON a.id = b.person_id WHERE (NOT (a.salary >= 168999.00)) GROUP BY b.order_id, b.quantity
+----
+1004
+1
+1004.000
+612.000
+1
+1012
+2
+1012.000
+612.000
+1
+NULL
+NULL
+NULL
+NULL
+0
+
+query I rowsort
+SELECT order_id FROM orders WHERE (ordered_on IS NULL) INTERSECT SELECT order_id FROM orders WHERE (NOT (NOT (product LIKE 'de%')))
+----
+
+query IIR rowsort
+SELECT a.id, COUNT(*), AVG(a.salary) FROM people a GROUP BY a.id HAVING COUNT(a.active) <= 4
+----
+1
+1
+185000.000
+10
+1
+151000.000
+2
+1
+192000.000
+3
+1
+178000.000
+4
+1
+169000.000
+5
+1
+201000.000
+6
+1
+155000.000
+7
+1
+142000.000
+8
+1
+176000.000
+9
+1
+188000.000
+
+query I rowsort
+SELECT ((x.person_id + x.person_id) / 3) FROM (SELECT person_id, shipped, ordered_on FROM orders WHERE (NOT (unit_price <> 44.99))) x WHERE (x.person_id BETWEEN 3 AND 7)
+----
+
+query IT rowsort
+SELECT (CASE WHEN (a.department >= 'Engineering') THEN 4 ELSE a.age END), (CASE WHEN (a.age > 53) THEN a.city ELSE a.department END) FROM people a WHERE (a.active IS NOT NULL)
+----
+4
+Engineering
+4
+Engineering
+4
+Engineering
+4
+Engineering
+4
+Palo Alto
+4
+Research
+4
+Research
+4
+Research
+44
+Analytics
+57
+Yorktown
+
+query II rowsort
+SELECT DISTINCT 19, 19 FROM orders a INNER JOIN people b ON a.person_id = b.id AND (b.department LIKE '___%') WHERE (b.salary BETWEEN 96000 AND 155000)
+----
+19
+19
+
+query I nosort
+SELECT (4 * a.person_id) FROM orders a WHERE (a.quantity IS NOT NULL) ORDER BY 1
+----
+4
+4
+4
+8
+12
+12
+20
+20
+28
+32
+36
+40
+
+query IIRI rowsort
+SELECT b.person_id, MAX(b.person_id), MAX(b.unit_price), SUM(b.quantity) FROM orders a INNER JOIN orders b ON a.person_id = b.person_id WHERE (b.order_id = 506) GROUP BY b.person_id
+----
+
+query II rowsort
+SELECT person_id, order_id FROM orders WHERE (order_id = 1504) INTERSECT SELECT person_id, order_id FROM orders WHERE (ordered_on IS NULL)
+----
+
+query I rowsort
+SELECT (a.age = 57) FROM people a WHERE (a.hired BETWEEN '2008-09-22' AND '2010-07-04')
+----
+0
+0
+
+query I rowsort
+SELECT (a.person_id <> 1) FROM orders a WHERE (NOT (a.shipped <> FALSE))
+----
+0
+1
+1
+1
+
+query IIII rowsort
+SELECT a.order_id, a.person_id, SUM(DISTINCT a.quantity), COUNT(*) FROM orders a WHERE (a.quantity IS NULL) GROUP BY a.order_id, a.person_id
+----
+
+query TT rowsort
+SELECT DISTINCT (CASE WHEN (a.salary <= 282000) THEN (CASE WHEN (a.salary = (SELECT COUNT(s.salary) FROM people s)) THEN a.city ELSE a.name END) ELSE (CASE WHEN (a.name <= 'Alan Turing') THEN a.city ELSE a.name END) END), CAST(a.id AS TEXT) FROM people a WHERE ((a.name IN ('Barbara Liskov')) OR (a.age <> 28.50))
+----
+Ada Lovelace
+1
+Alan Turing
+3
+Barbara Liskov
+5
+Donald Knuth
+6
+Edsger Dijkstra
+4
+Frances Allen
+10
+Grace Hopper
+2
+Katherine Johnson
+7
+Margaret Hamilton
+8
+Tim Berners-Lee
+9
+
+query TI rowsort
+SELECT (CASE WHEN (a.shipped) THEN (a.product || '-' || a.product) ELSE a.product END), (a.person_id <= 4) FROM orders a WHERE (a.person_id = 10)
+----
+desk
+0
+
+query IT nosort
+SELECT DISTINCT (a.salary / 4), a.department FROM people a WHERE (a.name BETWEEN 'Barbara Liskov' AND 'Margaret Hamilton') ORDER BY 1, 2
+----
+35500
+Analytics
+37750
+Analytics
+38750
+Research
+42250
+Research
+44000
+Engineering
+48000
+Engineering
+50250
+Engineering
+
+query ITI rowsort
+SELECT (a.department > 'Research'), a.city, (31 + a.id) FROM people a WHERE (((a.age >= 18) OR (a.city = 'Yorktown')) AND (a.city >= 'New York'))
+----
+0
+New York
+33
+0
+New York
+36
+0
+Palo Alto
+37
+0
+Yorktown
+41
+
+query IIR rowsort
+SELECT a.quantity, a.person_id, AVG(a.unit_price) FROM orders a GROUP BY a.quantity, a.person_id HAVING COUNT(*) >= 3
+----
+
+query TIRI rowsort
+SELECT a.name, a.age, AVG(a.salary), MIN(a.active) FROM people a WHERE (a.age < 57.00) GROUP BY a.name, a.age HAVING COUNT(a.name) >= 2
+----
+
+query T rowsort
+SELECT DISTINCT a.product FROM orders a WHERE (a.product = 'keyboard')
+----
+keyboard
+
+query IIR rowsort
+SELECT a.quantity, MAX(a.quantity), SUM(a.unit_price) FROM orders a WHERE (a.unit_price = 524.25) GROUP BY a.quantity
+----
+
+query IIRIR rowsort
+SELECT a.quantity, a.shipped, SUM(DISTINCT a.unit_price), COUNT(*), AVG(a.unit_price) FROM orders a WHERE (a.quantity < 2) GROUP BY a.quantity, a.shipped
+----
+1
+1
+2950.490
+4
+737.622
+1
+NULL
+1899.000
+1
+1899.000
+
+query III nosort
+SELECT (a.person_id / 3), ((a.person_id >= 0) OR (a.product >= 'keyboard')), SUM(a.quantity) OVER (ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE ((NOT (NOT (a.person_id < 2.00))) AND (((a.quantity <= 10.00) AND (a.order_id > 1006)) AND ((a.quantity <= 1) AND (a.unit_price >= 7.99)))) ORDER BY 1, 2, 3
+----
+0
+1
+1
+
+query I rowsort
+SELECT b.salary FROM orders a INNER JOIN people b ON a.person_id = b.id WHERE (NOT EXISTS (SELECT 1 FROM orders s WHERE (s.order_id IN (1010, 1007))))
+----
+
+query TII rowsort
+SELECT 'x', CAST(49 AS INT), (x.order_id BETWEEN 1008 AND 1510) FROM (SELECT person_id, ordered_on, order_id, shipped FROM orders) x WHERE (x.ordered_on <> '2024-07-03')
+----
+x
+49
+0
+x
+49
+0
+x
+49
+0
+x
+49
+0
+x
+49
+0
+x
+49
+0
+x
+49
+0
+x
+49
+1
+x
+49
+1
+x
+49
+1
+x
+49
+1
+
+query TT rowsort
+SELECT a.city, (CASE WHEN (a.department LIKE '%ee%') THEN a.department ELSE a.city END) FROM people a WHERE (a.name IS NULL)
+----
+
+query I rowsort
+SELECT (a.salary / 5) FROM people a WHERE (a.salary > 168999)
+----
+33800
+35200
+35600
+37000
+37600
+38400
+40200
+
+query IIII nosort
+SELECT (31 + a.quantity), (a.product LIKE '%rd'), (a.quantity - b.age), ROW_NUMBER() OVER (ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on, b.id, b.name, b.age, b.city, b.department, b.salary, b.score, b.hired) FROM orders a JOIN people b ON a.person_id = b.id AND (b.salary <= 151001.00) WHERE (b.score <= (SELECT MIN(s.age) FROM people s)) ORDER BY 1, 2, 3, 4
+----
+32
+0
+-43
+1
+33
+0
+-55
+2
+
+query TI nosort
+SELECT a.ordered_on, LAG(a.order_id) OVER (PARTITION BY a.order_id ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE (a.person_id > 12) ORDER BY 1, 2
+----
+
+query I rowsort
+SELECT DISTINCT (NOT (a.order_id >= 1512.00)) FROM orders a WHERE (a.ordered_on = '2024-01-17')
+----
+1
+
+query TIR rowsort
+SELECT a.department, MAX(a.salary), AVG(a.age) FROM people a WHERE (a.department <> 'Research') GROUP BY a.department HAVING COUNT(DISTINCT a.active) <= 3
+----
+Analytics
+151000
+50.500
+Engineering
+201000
+39.500
+
+query TTI nosort
+SELECT (a.hired || '!'), a.name, (a.age * a.id) FROM people a WHERE ((a.department LIKE '%ar%') AND (NOT ((a.score <> 12.38) AND (a.salary = (SELECT COUNT(s.quantity) FROM orders s))))) ORDER BY 1, 2, 3 DESC
+----
+NULL
+Edsger Dijkstra
+208
+1995-01-15!
+Donald Knuth
+366
+1998-06-11!
+Tim Berners-Lee
+441
+2003-02-14!
+Alan Turing
+123
+
+query II rowsort
+SELECT COUNT(a.shipped), COUNT(*) FROM orders a WHERE (a.person_id BETWEEN 5 AND 9)
+----
+4
+5
+
+query III nosort
+SELECT (33 * a.order_id), (a.shipped), ((CASE WHEN (a.shipped = FALSE) THEN a.quantity ELSE a.person_id END) - (34 / 2)) FROM orders a WHERE (a.ordered_on BETWEEN '2024-01-15' AND '2024-06-14') ORDER BY 1, 2, 3
+----
+33033
+1
+-16
+33066
+1
+-14
+33099
+0
+-13
+33132
+1
+-10
+33165
+1
+-12
+33198
+0
+-7
+33231
+1
+-12
+33264
+NULL
+-8
+33297
+1
+-14
+33330
+0
+-12
+33363
+1
+-16
+
+query T rowsort
+SELECT a.department FROM people a WHERE (a.hired <= '1999-11-30')
+----
+Analytics
+Engineering
+Research
+Research
+
+query TIII rowsort
+SELECT a.hired, a.active, COUNT(*), COUNT(*) FROM people a WHERE ((a.score < 4.12) OR (a.salary < 213000.00)) GROUP BY a.hired, a.active HAVING COUNT(*) <> 3
+----
+1993-04-02
+0
+1
+1
+1995-01-15
+0
+1
+1
+1998-06-11
+1
+1
+1
+1999-11-30
+1
+1
+1
+2001-05-01
+1
+1
+1
+2003-02-14
+1
+1
+1
+2005-03-30
+1
+1
+1
+2008-09-22
+1
+1
+1
+2010-07-04
+1
+1
+1
+NULL
+0
+1
+1
+
+query R rowsort
+SELECT (CASE WHEN (x.unit_price <> 89.99) THEN x.unit_price ELSE CAST((39 + 42) AS FLOAT) END) FROM (SELECT unit_price, quantity, shipped, order_id FROM orders WHERE ((order_id = 1011.00) OR (ordered_on < '2024-05-08'))) x WHERE (NOT (x.order_id NOT IN (1004, 1007, 1006, NULL)))
+----
+612.000
+7.990
+81.000
+
+query IT rowsort
+SELECT MIN(a.age), MIN(a.hired) FROM people a HAVING SUM(a.id) <= 2
+----
+
+query IIT rowsort
+SELECT a.order_id, b.quantity, MAX(a.product) FROM orders a JOIN orders b ON a.quantity = b.quantity AND (b.quantity = 1.50) GROUP BY a.order_id, b.quantity HAVING SUM(DISTINCT b.person_id) <> 2
+----
+
+query IIRI nosort
+SELECT (b.salary < 96000), (NOT EXISTS (SELECT 1 FROM people s WHERE ((s.name LIKE '% H%') AND (s.age = 45)))), ((CASE WHEN (a.ordered_on <> '2024-01-15') THEN a.unit_price ELSE a.unit_price END) + (CASE WHEN (b.age <= 36.00) THEN b.id ELSE a.order_id END)), RANK() OVER (PARTITION BY b.name ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on, b.id, b.name, b.age, b.city, b.department, b.salary, b.score, b.hired) FROM orders a RIGHT JOIN people b ON a.person_id = b.id WHERE (b.department IS NULL) ORDER BY 1, 2, 3, 4 DESC
+----
+
+query TTRI rowsort
+SELECT a.hired, a.name, AVG(a.age), SUM(a.salary) FROM people a GROUP BY a.hired, a.name
+----
+1993-04-02
+Frances Allen
+57.000
+151000
+1995-01-15
+Donald Knuth
+61.000
+155000
+1998-06-11
+Tim Berners-Lee
+49.000
+188000
+1999-11-30
+Grace Hopper
+45.000
+192000
+2001-05-01
+Ada Lovelace
+36.000
+185000
+2003-02-14
+Alan Turing
+41.000
+178000
+2005-03-30
+Margaret Hamilton
+39.000
+176000
+2008-09-22
+Katherine Johnson
+44.000
+142000
+2010-07-04
+Barbara Liskov
+38.000
+201000
+NULL
+Edsger Dijkstra
+52.000
+169000
+
+query TT rowsort
+SELECT a.name, (CASE WHEN (NOT a.active) THEN a.department ELSE (CASE WHEN (a.active) THEN b.product ELSE b.product END) END) FROM people a RIGHT JOIN orders b ON a.id = b.person_id AND (b.ordered_on = '2024-02-11') WHERE (a.name BETWEEN 'Donald Knuth' AND 'Edsger Dijkstra')
+----
+
+query IT rowsort
+SELECT (x.quantity - 23), 'x' FROM (SELECT order_id, unit_price, quantity, shipped FROM orders WHERE (unit_price <> 1899.00)) x WHERE (x.unit_price BETWEEN 88.99 AND 524.25)
+----
+-21
+x
+-21
+x
+-22
+x
+-22
+x
+
+query TI rowsort
+SELECT CAST(b.age AS TEXT), a.salary FROM people a FULL JOIN people b ON a.id = b.id AND (a.name <= 'Edsger Dijkstra') WHERE (EXISTS (SELECT 1 FROM people s WHERE (s.name IS NULL)))
+----
+
+query TTI rowsort
+SELECT DISTINCT a.product, (a.ordered_on || '!'), ((a.order_id / 2) + (15 / 3)) FROM orders a WHERE (NOT a.shipped)
+----
+cable
+2024-03-19!
+508
+cable
+2024-05-30!
+510
+desk
+2024-07-03!
+511
+mouse
+2024-02-02!
+506
+
+query TI nosort
+SELECT CAST(x.id AS TEXT), ROW_NUMBER() OVER (PARTITION BY x.city ORDER BY x.id, x.city) FROM (SELECT id, city FROM people) x WHERE (x.city = 'Austin') ORDER BY 1, 2
+----
+4
+1
+
+query I rowsort
+SELECT a.person_id FROM orders a WHERE (a.person_id <= 10)
+----
+1
+1
+1
+10
+2
+3
+3
+5
+5
+7
+8
+9
+
+query IR nosort
+SELECT 45, CAST((CASE WHEN (a.product LIKE 'ca%') THEN CAST(a.quantity AS FLOAT) ELSE a.unit_price END) AS FLOAT) FROM orders a WHERE (((a.quantity <= 3) AND (a.person_id = 2)) OR (a.ordered_on NOT IN (SELECT s.hired FROM people s WHERE ((s.score < 8.25) AND (s.active))))) ORDER BY 1, 2 DESC
+----
+45
+1899.000
+45
+1899.000
+45
+612.000
+45
+612.000
+45
+349.500
+45
+349.500
+45
+89.990
+45
+89.990
+45
+24.250
+45
+24.250
+45
+10.000
+45
+5.000
+
+query II rowsort
+SELECT (a.id <> 7), (a.id = 3) FROM people a WHERE (a.name >= 'Tim Berners-Lee')
+----
+1
+0
+
+query TT rowsort
+SELECT (CASE WHEN (a.product < 'keyboard') THEN (a.product || '-' || a.product) ELSE (a.product || '-' || a.product) END), a.product FROM orders a WHERE (a.unit_price BETWEEN 8.99 AND 24.25)
+----
+mouse-mouse
+mouse
+mouse-mouse
+mouse
+
+query IRI rowsort
+SELECT (b.id <= 2.00), a.unit_price, (10 - a.order_id) FROM orders a INNER JOIN people b ON a.person_id = b.id AND (a.product NOT LIKE '%op') WHERE (a.unit_price <> 612.00)
+----
+0
+24.250
+-999
+0
+349.500
+-992
+0
+349.500
+-995
+0
+7.990
+-1000
+0
+89.990
+-997
+1
+24.250
+-993
+1
+7.990
+-996
+1
+89.990
+-991
+
+query TIR rowsort
+SELECT a.city, COUNT(a.department), AVG(b.unit_price) FROM people a JOIN orders b ON a.id = b.person_id GROUP BY a.city
+----
+Cambridge
+1
+7.990
+Hampton
+1
+612.000
+London
+6
+714.332
+New York
+3
+149.160
+Yorktown
+1
+612.000
+
+query I rowsort
+SELECT (NOT a.active) FROM people a WHERE (a.department = 'Engineering')
+----
+0
+0
+0
+0
+
+query TI rowsort
+SELECT CAST(a.salary AS TEXT), (a.name LIKE '% H%') FROM people a WHERE ((a.department NOT IN (SELECT s.product FROM orders s WHERE (s.order_id BETWEEN 501 AND 505))) AND (a.hired BETWEEN '1998-06-11' AND '1999-11-30'))
+----
+188000
+0
+192000
+1
+
+query T rowsort
+SELECT a.product FROM orders a LEFT JOIN orders b ON a.person_id = b.person_id AND (a.unit_price < 89.99) WHERE (NOT b.shipped)
+----
+cable
+cable
+mouse
+
+query IRR rowsort
+SELECT MAX(a.shipped), AVG(a.order_id), AVG(a.order_id) FROM orders a HAVING COUNT(*) <> 2
+----
+1
+1006.500
+1006.500
+
+query T rowsort
+SELECT x.name FROM (SELECT id, name, active FROM people) x WHERE (NOT (x.id = 4))
+----
+Ada Lovelace
+Alan Turing
+Barbara Liskov
+Donald Knuth
+Frances Allen
+Grace Hopper
+Katherine Johnson
+Margaret Hamilton
+Tim Berners-Lee
+
+query TITIR rowsort
+SELECT a.ordered_on, b.salary, MIN(b.city), MIN(b.active), SUM(DISTINCT b.score) FROM orders a RIGHT JOIN people b ON a.person_id = b.id AND (b.city LIKE 'London') WHERE (b.hired NOT IN ('2010-07-04', '1998-06-11')) GROUP BY a.ordered_on, b.salary HAVING SUM(a.unit_price) <> 4
+----
+2024-01-15
+185000
+London
+1
+9.500
+2024-01-17
+178000
+London
+1
+NULL
+2024-02-02
+185000
+London
+1
+9.500
+2024-05-08
+178000
+London
+1
+NULL
+2024-06-14
+185000
+London
+1
+9.500
+
+query TRI rowsort
+SELECT product, unit_price, person_id FROM orders WHERE (order_id <= 505) UNION ALL SELECT product, unit_price, person_id FROM orders WHERE (quantity IN (4, 1))
+----
+desk
+612.000
+7
+keyboard
+89.990
+5
+laptop
+1899.000
+1
+laptop
+1899.000
+9
+monitor
+349.500
+3
+mouse
+24.250
+1
+
+query T rowsort
+SELECT DISTINCT a.ordered_on FROM orders a WHERE ((a.unit_price IN (349.50, 612.00, 24.25, NULL)) AND (a.person_id IN (9, 1, NULL)))
+----
+2024-02-02
+
+query I rowsort
+SELECT (42 * 27) FROM orders a WHERE (a.shipped NOT IN (FALSE))
+----
+1134
+1134
+1134
+1134
+1134
+1134
+1134
+
+query TIII rowsort
+SELECT a.name, COUNT(a.score), COUNT(a.name), SUM(a.age) FROM people a WHERE (a.active <> TRUE) GROUP BY a.name
+----
+Donald Knuth
+1
+1
+61
+Edsger Dijkstra
+1
+1
+52
+Frances Allen
+1
+1
+57
+
+query I rowsort
+SELECT (x.id - x.id) FROM (SELECT id, active, city FROM people WHERE (department LIKE '%ar%')) x WHERE (x.id = 7)
+----
+
+query III rowsort
+SELECT (a.ordered_on < '2024-03-05'), 41, (a.quantity = 1.50) FROM orders a WHERE (a.quantity < 1)
+----
+
+query III nosort
+SELECT 48, (a.order_id > (SELECT AVG(s.quantity) FROM orders s)), RANK() OVER (ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE (a.ordered_on > '2024-03-05') ORDER BY 1, 2, 3
+----
+48
+1
+1
+48
+1
+2
+48
+1
+3
+48
+1
+4
+48
+1
+5
+48
+1
+6
+48
+1
+7
+
+query TIT rowsort
+SELECT a.department, a.salary, MIN(b.product) FROM people a JOIN orders b ON a.id = b.person_id WHERE (((a.score = (SELECT MIN(s.score) FROM people s)) AND (a.score = 13.65)) OR (b.ordered_on < '2024-05-08')) GROUP BY a.department, a.salary
+----
+Analytics
+142000
+desk
+Engineering
+185000
+keyboard
+Engineering
+192000
+cable
+Engineering
+201000
+keyboard
+Research
+178000
+monitor
+Research
+188000
+laptop
+
+query T rowsort
+SELECT name FROM people WHERE (salary NOT BETWEEN 169000 AND 301500) UNION SELECT name FROM people WHERE (active = FALSE)
+----
+Donald Knuth
+Edsger Dijkstra
+Frances Allen
+Katherine Johnson
+
+query TIR rowsort
+SELECT a.city, a.id, AVG(a.score) FROM people a RIGHT JOIN orders b ON a.id = b.person_id AND (a.active) WHERE (a.hired NOT BETWEEN '1993-04-02' AND '2005-03-30') GROUP BY a.city, a.id HAVING SUM(b.quantity) = 1
+----
+Hampton
+7
+8.800
+
+query TTII rowsort
+SELECT a.name, MAX(a.name), MAX(a.salary), COUNT(a.score) FROM people a GROUP BY a.name
+----
+Ada Lovelace
+Ada Lovelace
+185000
+1
+Alan Turing
+Alan Turing
+178000
+0
+Barbara Liskov
+Barbara Liskov
+201000
+1
+Donald Knuth
+Donald Knuth
+155000
+1
+Edsger Dijkstra
+Edsger Dijkstra
+169000
+1
+Frances Allen
+Frances Allen
+151000
+1
+Grace Hopper
+Grace Hopper
+192000
+1
+Katherine Johnson
+Katherine Johnson
+142000
+1
+Margaret Hamilton
+Margaret Hamilton
+176000
+1
+Tim Berners-Lee
+Tim Berners-Lee
+188000
+0
+
+query II rowsort
+SELECT quantity, order_id FROM orders WHERE ((ordered_on IS NULL) AND (NOT shipped)) INTERSECT SELECT quantity, order_id FROM orders WHERE (shipped)
+----
+
+query TTI nosort
+SELECT a.department, a.department, DENSE_RANK() OVER (ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired) FROM people a WHERE (a.id = 2.00) ORDER BY 1, 2, 3
+----
+Engineering
+Engineering
+1
+
+query IITI nosort
+SELECT (13 + a.id), 10, CAST(CAST(a.score AS INT) AS TEXT), COUNT(*) OVER (PARTITION BY a.department ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired) FROM people a WHERE ((NOT EXISTS (SELECT 1 FROM people s WHERE (s.score < 4.75))) OR (((a.age >= 40) OR (a.city < 'Yorktown')) OR (a.department BETWEEN 'Analytics' AND 'Research'))) ORDER BY 1, 2, 3, 4 DESC
+----
+14
+10
+9
+1
+15
+10
+8
+2
+16
+10
+NULL
+1
+17
+10
+7
+2
+18
+10
+9
+3
+19
+10
+9
+3
+20
+10
+8
+1
+21
+10
+9
+4
+22
+10
+NULL
+4
+23
+10
+8
+2
+
+query IIII rowsort
+SELECT a.id, COUNT(DISTINCT b.order_id), SUM(b.person_id), MAX(a.id) FROM people a RIGHT JOIN orders b ON a.id = b.person_id WHERE (a.city > 'Hampton') GROUP BY a.id HAVING SUM(b.unit_price) > 3
+----
+1
+3
+3
+1
+10
+1
+10
+10
+2
+1
+2
+2
+3
+2
+6
+3
+5
+2
+10
+5
+9
+1
+9
+9
+
+query TI rowsort
+SELECT 'x', (x.shipped IN (FALSE, NULL)) FROM (SELECT person_id, shipped, quantity FROM orders WHERE (quantity NOT BETWEEN 1 AND 10)) x WHERE (x.quantity < 4.00)
+----
+
+query II nosort
+SELECT (a.order_id IN (1007, 1011, 1010, NULL)), COUNT(*) OVER (PARTITION BY a.order_id ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE (a.order_id IS NULL) ORDER BY 1, 2
+----
+
+query III rowsort
+SELECT DISTINCT (a.ordered_on IS NULL), a.person_id, (a.person_id <> 4.50) FROM orders a WHERE (a.shipped IS NULL)
+----
+0
+9
+1
+
+query TRII rowsort
+SELECT b.name, AVG(a.id), MAX(a.active), COUNT(a.salary) FROM people a JOIN people b ON a.age = b.age WHERE (((a.id < (SELECT MAX(s.id) FROM people s)) OR (b.age <= 62)) AND (NOT (a.active <> FALSE))) GROUP BY b.name HAVING AVG(b.age) <> 3
+----
+Donald Knuth
+6.000
+0
+1
+Edsger Dijkstra
+4.000
+0
+1
+Frances Allen
+10.000
+0
+1
+
+query IRR rowsort
+SELECT b.salary, a.unit_price, (b.id + (b.score * a.quantity)) FROM orders a LEFT JOIN people b ON a.person_id = b.id WHERE (a.product BETWEEN 'monitor' AND 'mouse')
+----
+178000
+24.250
+NULL
+178000
+349.500
+NULL
+185000
+24.250
+39.000
+201000
+349.500
+24.000
+
+query I rowsort
+SELECT age FROM people WHERE (department NOT BETWEEN 'Analytics' AND 'Research') EXCEPT SELECT age FROM people WHERE ((salary <> 188000.00) OR (score BETWEEN 8.80 AND 13.65))
+----
+
+query II nosort
+SELECT 15, DENSE_RANK() OVER (ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired, b.order_id, b.person_id, b.product, b.quantity, b.unit_price, b.ordered_on) FROM people a JOIN orders b ON a.id = b.person_id WHERE (b.person_id <> 8.00) ORDER BY 1, 2 DESC
+----
+15
+11
+15
+10
+15
+9
+15
+8
+15
+7
+15
+6
+15
+5
+15
+4
+15
+3
+15
+2
+15
+1
+
+query I nosort
+SELECT (NOT (a.salary <= 201000)) FROM people a WHERE (a.name NOT IN (SELECT s.name FROM people s WHERE (s.city BETWEEN 'Hampton' AND 'London'))) ORDER BY 1
+----
+0
+0
+0
+0
+0
+0
+
+query T nosort
+SELECT (a.hired || '!') FROM people a WHERE (NOT (a.salary = 71000)) ORDER BY 1
+----
+NULL
+1993-04-02!
+1995-01-15!
+1998-06-11!
+1999-11-30!
+2001-05-01!
+2003-02-14!
+2005-03-30!
+2008-09-22!
+2010-07-04!
+
+query I rowsort
+SELECT a.id FROM people a WHERE (a.age < 40)
+----
+1
+5
+8
+
+query TII nosort
+SELECT (CASE WHEN (a.hired IN (SELECT s.hired FROM people s WHERE (s.active))) THEN CAST(36 AS TEXT) ELSE a.city END), (a.salary - (a.salary - a.id)), DENSE_RANK() OVER (ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired) FROM people a WHERE (NOT a.active) ORDER BY 1, 2, 3 DESC
+----
+Austin
+4
+1
+Palo Alto
+6
+2
+Yorktown
+10
+3
+
+query ITII nosort
+SELECT 17, CAST(CAST(b.order_id AS BIGINT) AS TEXT), (b.person_id > 3.00), COUNT(*) OVER (ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired, b.order_id, b.person_id, b.product, b.quantity, b.unit_price, b.ordered_on) FROM people a JOIN orders b ON a.id = b.person_id AND (b.ordered_on <> '2024-01-17') WHERE ((a.salary < 301500.00) OR (a.salary = 176001)) ORDER BY 1, 2, 3, 4
+----
+17
+1001
+0
+1
+17
+1003
+0
+2
+17
+1004
+1
+8
+17
+1005
+1
+6
+17
+1006
+0
+4
+17
+1007
+1
+7
+17
+1008
+1
+10
+17
+1009
+0
+5
+17
+1010
+1
+9
+17
+1011
+0
+3
+17
+1012
+1
+11
+
+query ITRI nosort
+SELECT (a.quantity + CAST(a.quantity AS BIGINT)), CAST(CAST((a.order_id * a.unit_price) AS INT) AS TEXT), ((14 * a.person_id) + a.unit_price), LAG(a.person_id) OVER (ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE (a.unit_price BETWEEN 12.12 AND 89.99) ORDER BY 1, 2, 3, 4
+----
+2
+90619
+159.990
+1
+4
+24468
+66.250
+5
+4
+90079
+103.990
+NULL
+8
+24322
+38.250
+1
+
+query I rowsort
+SELECT (a.salary < (SELECT SUM(s.age) FROM people s)) FROM people a WHERE ((a.department LIKE '___%') AND (a.hired <= '1995-01-15'))
+----
+0
+0
+
+query TII rowsort
+SELECT a.ordered_on, COUNT(DISTINCT a.order_id), MIN(a.quantity) FROM orders a GROUP BY a.ordered_on
+----
+2024-01-15
+1
+2
+2024-01-17
+1
+1
+2024-02-02
+1
+4
+2024-02-11
+1
+1
+2024-03-05
+1
+2
+2024-03-19
+1
+10
+2024-04-01
+1
+1
+2024-04-22
+1
+1
+2024-05-08
+1
+2
+2024-05-30
+1
+5
+2024-06-14
+1
+1
+2024-07-03
+1
+2
+
+query RIR rowsort
+SELECT (a.order_id - a.unit_price), (a.quantity + a.person_id), (CAST(a.person_id AS FLOAT) - CAST(a.order_id AS INT)) FROM orders a WHERE (a.unit_price <> 613.00)
+----
+-888.000
+2
+-1010.000
+-891.000
+10
+-999.000
+1002.010
+13
+-1002.000
+392.000
+8
+-997.000
+400.000
+12
+-1002.000
+652.500
+4
+-999.000
+655.500
+7
+-1000.000
+911.010
+3
+-1000.000
+917.010
+6
+-1002.000
+978.750
+5
+-1002.000
+984.750
+5
+-1006.000
+998.010
+12
+-1004.000
+
+query TI nosort
+SELECT a.name, ((a.salary / 8) / 7) FROM people a WHERE (a.age BETWEEN 45 AND 54) ORDER BY 1, 2
+----
+Edsger Dijkstra
+3017
+Grace Hopper
+3428
+Tim Berners-Lee
+3357
+
+query II rowsort
+SELECT a.quantity, 36 FROM orders a WHERE (NOT (a.product NOT BETWEEN 'cable' AND 'laptop'))
+----
+1
+36
+1
+36
+1
+36
+1
+36
+10
+36
+2
+36
+2
+36
+5
+36
+
+query TR rowsort
+SELECT CAST(a.id AS TEXT), (b.unit_price - a.salary) FROM people a LEFT JOIN orders b ON a.id = b.person_id AND (a.score <= 8.25) WHERE (b.quantity IS NULL)
+----
+1
+NULL
+10
+NULL
+3
+NULL
+4
+NULL
+5
+NULL
+6
+NULL
+7
+NULL
+8
+NULL
+9
+NULL
+
+query TTIII rowsort
+SELECT b.name, a.department, COUNT(*), SUM(b.id), COUNT(b.active) FROM people a RIGHT JOIN people b ON a.name = b.name WHERE (b.age > 62) GROUP BY b.name, a.department
+----
+
+query TII rowsort
+SELECT a.city, a.age, (a.salary - a.age) FROM people a WHERE (NOT (NOT EXISTS (SELECT 1 FROM people s WHERE (s.id <= 6))))
+----
+Austin
+52
+168948
+Cambridge
+39
+175961
+Hampton
+44
+141956
+London
+36
+184964
+London
+41
+177959
+London
+49
+187951
+New York
+38
+200962
+New York
+45
+191955
+Palo Alto
+61
+154939
+Yorktown
+57
+150943
+
+query I rowsort
+SELECT order_id FROM orders WHERE (product IN ('desk')) EXCEPT SELECT order_id FROM orders WHERE ((person_id <> 10) AND (ordered_on NOT BETWEEN '2024-01-17' AND '2024-07-03'))
+----
+1004
+1012
+
+query III nosort
+SELECT (a.score IN (8.40)), (a.score = 9.25), RANK() OVER (PARTITION BY b.product ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired, b.order_id, b.person_id, b.product, b.quantity, b.unit_price, b.ordered_on) FROM people a JOIN orders b ON a.id = b.person_id AND (b.person_id <> 9.00) WHERE (b.product IS NULL) ORDER BY 1, 2, 3
+----
+
+query T rowsort
+SELECT DISTINCT a.name FROM people a WHERE (NOT EXISTS (SELECT 1 FROM orders s WHERE (s.quantity >= 5.00)))
+----
+
+query TTI rowsort
+SELECT a.product, a.product, (a.product IS NOT NULL) FROM orders a RIGHT JOIN orders b ON a.ordered_on = b.ordered_on WHERE (b.unit_price IS NOT NULL)
+----
+cable
+cable
+1
+cable
+cable
+1
+desk
+desk
+1
+desk
+desk
+1
+keyboard
+keyboard
+1
+keyboard
+keyboard
+1
+laptop
+laptop
+1
+laptop
+laptop
+1
+monitor
+monitor
+1
+monitor
+monitor
+1
+mouse
+mouse
+1
+mouse
+mouse
+1
+
+query R rowsort
+SELECT x.score FROM (SELECT active, score, department FROM people WHERE ((active) OR (score <= 7.80))) x WHERE (x.department IS NOT NULL)
+----
+7.000
+8.250
+8.800
+9.100
+9.500
+9.500
+NULL
+NULL
+
+query ITRTT rowsort
+SELECT a.quantity, a.ordered_on, AVG(a.quantity), MIN(a.product), MIN(a.ordered_on) FROM orders a GROUP BY a.quantity, a.ordered_on
+----
+1
+2024-01-17
+1.000
+monitor
+2024-01-17
+1
+2024-02-11
+1.000
+desk
+2024-02-11
+1
+2024-04-01
+1.000
+keyboard
+2024-04-01
+1
+2024-04-22
+1.000
+laptop
+2024-04-22
+1
+2024-06-14
+1.000
+laptop
+2024-06-14
+10
+2024-03-19
+10.000
+cable
+2024-03-19
+2
+2024-01-15
+2.000
+keyboard
+2024-01-15
+2
+2024-03-05
+2.000
+monitor
+2024-03-05
+2
+2024-05-08
+2.000
+mouse
+2024-05-08
+2
+2024-07-03
+2.000
+desk
+2024-07-03
+4
+2024-02-02
+4.000
+mouse
+2024-02-02
+5
+2024-05-30
+5.000
+cable
+2024-05-30
+
+query TI rowsort
+SELECT ordered_on, order_id FROM orders WHERE (person_id < 3.00) UNION SELECT ordered_on, order_id FROM orders WHERE (shipped = TRUE)
+----
+2024-01-15
+1001
+2024-01-17
+1002
+2024-02-02
+1003
+2024-02-11
+1004
+2024-03-05
+1005
+2024-03-19
+1006
+2024-04-01
+1007
+2024-05-08
+1009
+2024-06-14
+1011
+
+query IIRI nosort
+SELECT 22, ((9 * b.id) - (43 / 6)), CAST((a.order_id + 15) AS FLOAT), DENSE_RANK() OVER (ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on, b.id, b.name, b.age, b.city, b.department, b.salary, b.score, b.hired) FROM orders a FULL JOIN people b ON a.person_id = b.id AND (b.score <> 9.90) WHERE (a.unit_price IS NULL) ORDER BY 1, 2, 3, 4
+----
+22
+20
+NULL
+1
+22
+29
+NULL
+2
+22
+47
+NULL
+3
+22
+74
+NULL
+4
+
+query ITI rowsort
+SELECT (x.age <= 49.00), x.city, (x.age < 30.50) FROM (SELECT city, age, score FROM people) x WHERE (x.score = 4.20)
+----
+
+query II nosort
+SELECT (a.hired = '1993-04-02'), SUM(a.id) OVER (ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired) FROM people a WHERE ((a.id IS NULL) OR (a.salary >= 232500.00)) ORDER BY 1, 2
+----
+
+query II rowsort
+SELECT b.order_id, MIN(b.quantity) FROM orders a FULL JOIN orders b ON a.product = b.product WHERE (b.shipped IS NULL) GROUP BY b.order_id HAVING SUM(b.quantity) < 2
+----
+
+query IIR rowsort
+SELECT COUNT(*), MAX(a.shipped), MAX(a.unit_price) FROM orders a WHERE ((a.ordered_on < '2024-01-17') OR (a.order_id <= 1002))
+----
+2
+1
+349.500
+
+query IIR rowsort
+SELECT COUNT(*), SUM(b.person_id), AVG(a.id) FROM people a RIGHT JOIN orders b ON a.id = b.person_id AND (a.city LIKE '%ge')
+----
+12
+55
+8.000
+
+query IITI rowsort
+SELECT b.active, MAX(a.active), MAX(a.name), COUNT(DISTINCT a.hired) FROM people a JOIN people b ON a.age = b.age AND (b.id <> 1) WHERE (NOT a.active) GROUP BY b.active
+----
+0
+0
+Frances Allen
+2
+
+query TRII rowsort
+SELECT a.product, AVG(a.person_id), COUNT(*), COUNT(*) FROM orders a GROUP BY a.product HAVING COUNT(*) > 4
+----
+
+query IIT rowsort
+SELECT age, salary, department FROM people WHERE (salary BETWEEN 150999 AND 277500) EXCEPT SELECT age, salary, department FROM people WHERE ((city BETWEEN 'Hampton' AND 'Palo Alto') AND (age <> 44))
+----
+39
+176000
+Engineering
+52
+169000
+Research
+57
+151000
+Analytics
+
+query RII rowsort
+SELECT a.score, a.age, (CASE WHEN (a.salary < 169000) THEN 2 ELSE 43 END) FROM people a WHERE (a.age = 56.00)
+----
+
+query ITT rowsort
+SELECT quantity, product, ordered_on FROM orders WHERE (quantity BETWEEN 2 AND 10) EXCEPT SELECT quantity, product, ordered_on FROM orders WHERE (quantity NOT BETWEEN 1 AND 3)
+----
+2
+desk
+2024-07-03
+2
+keyboard
+2024-01-15
+2
+monitor
+2024-03-05
+2
+mouse
+2024-05-08
+
+query I rowsort
+SELECT (a.quantity <> 2) FROM orders a FULL JOIN orders b ON a.quantity = b.quantity WHERE (a.order_id BETWEEN 1003 AND 1509)
+----
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+1
+
+query TTI rowsort
+SELECT a.name, (CASE WHEN (NOT (a.age <> 73)) THEN a.name ELSE (CASE WHEN (a.city < 'Cambridge') THEN a.city ELSE a.department END) END), ((CASE WHEN (a.department < 'Analytics') THEN a.age ELSE a.id END) / 4) FROM people a WHERE (NOT a.active)
+----
+Donald Knuth
+Research
+1
+Edsger Dijkstra
+Austin
+1
+Frances Allen
+Analytics
+2
+
+query I rowsort
+SELECT SUM(DISTINCT a.order_id) FROM orders a
+----
+12078
+
+query TTI nosort
+SELECT a.product, a.product, DENSE_RANK() OVER (PARTITION BY a.shipped ORDER BY a.order_id, a.person_id, a.product, a.quantity, a.unit_price, a.ordered_on) FROM orders a WHERE (a.order_id IN (SELECT s.quantity FROM orders s WHERE (s.product NOT LIKE '%us%'))) ORDER BY 1, 2, 3
+----
+
+query TTI nosort
+SELECT CAST(a.salary AS TEXT), a.city, (a.city BETWEEN 'Hampton' AND 'New York') FROM people a WHERE (a.age BETWEEN 45 AND 78) ORDER BY 1, 2, 3
+----
+151000
+Yorktown
+0
+155000
+Palo Alto
+0
+169000
+Austin
+0
+188000
+London
+1
+192000
+New York
+1
+
+query II rowsort
+SELECT (x.score <= 10.10), 11 FROM (SELECT id, score, age FROM people) x WHERE (x.id = 3.00)
+----
+NULL
+11
+
+query T rowsort
+SELECT (a.hired || '!') FROM people a WHERE (a.city BETWEEN 'Hampton' AND 'London')
+----
+1998-06-11!
+2001-05-01!
+2003-02-14!
+2008-09-22!
+
+query R rowsort
+SELECT (a.score * a.age) FROM people a INNER JOIN people b ON a.name = b.name WHERE ((a.hired IN ('1998-06-11', '2010-07-04', '1993-04-02')) AND (a.hired <> '1998-06-11'))
+----
+361.000
+478.800
+
+query T rowsort
+SELECT b.city FROM orders a LEFT JOIN people b ON a.person_id = b.id WHERE (b.score <> 7.25)
+----
+Cambridge
+Hampton
+London
+London
+London
+New York
+New York
+New York
+Yorktown
+
+query RRRI nosort
+SELECT CAST(8 AS FLOAT), (CASE WHEN (a.salary < 188001) THEN CAST(a.id AS FLOAT) ELSE a.score END), (a.score * (a.id - a.id)), DENSE_RANK() OVER (ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired) FROM people a WHERE (a.department NOT LIKE '%ar%') ORDER BY 1, 2, 3, 4
+----
+8.000
+1.000
+0.000
+1
+8.000
+7.000
+0.000
+4
+8.000
+8.000
+0.000
+5
+8.000
+8.250
+0.000
+2
+8.000
+9.500
+0.000
+3
+8.000
+10.000
+0.000
+6
+
+query II rowsort
+SELECT a.active, COUNT(DISTINCT a.city) FROM people a WHERE (a.id BETWEEN 10 AND 15) GROUP BY a.active HAVING COUNT(DISTINCT a.score) < 2
+----
+0
+1
+
+query TTI rowsort
+SELECT a.city, MAX(a.name), MAX(a.salary) FROM people a FULL JOIN people b ON a.salary = b.salary GROUP BY a.city
+----
+Austin
+Edsger Dijkstra
+169000
+Cambridge
+Margaret Hamilton
+176000
+Hampton
+Katherine Johnson
+142000
+London
+Tim Berners-Lee
+188000
+New York
+Grace Hopper
+201000
+Palo Alto
+Donald Knuth
+155000
+Yorktown
+Frances Allen
+151000
+
+query ITR rowsort
+SELECT a.order_id, b.department, (CAST(32 AS FLOAT) - (CASE WHEN (b.active = FALSE) THEN a.unit_price ELSE a.unit_price END)) FROM orders a LEFT JOIN people b ON a.person_id = b.id WHERE (a.ordered_on NOT IN ('2024-02-11', '2024-06-14', '2024-02-02'))
+----
+1001
+Engineering
+-57.990
+1002
+Research
+-317.500
+1005
+Engineering
+-317.500
+1006
+Engineering
+24.010
+1007
+Engineering
+-57.990
+1008
+Research
+-1867.000
+1009
+Research
+7.750
+1010
+Engineering
+24.010
+1012
+Analytics
+-580.000
+
+query IRRT rowsort
+SELECT b.active, MIN(a.unit_price), AVG(b.salary), MIN(b.name) FROM orders a FULL JOIN people b ON a.person_id = b.id WHERE (b.hired <> '2001-05-01') GROUP BY b.active HAVING AVG(a.unit_price) = 4
+----
+
+query II rowsort
+SELECT salary, active FROM people WHERE (salary >= 177999) UNION SELECT salary, active FROM people WHERE (score BETWEEN 4.20 AND 8.40)
+----
+151000
+0
+169000
+0
+178000
+1
+185000
+1
+188000
+1
+192000
+1
+201000
+1
+
+query ITR rowsort
+SELECT a.salary, a.city, AVG(a.id) FROM people a WHERE ((a.salary >= 226500) OR ((a.city LIKE 'Yo%') OR (a.city = 'Hampton'))) GROUP BY a.salary, a.city
+----
+142000
+Hampton
+7.000
+151000
+Yorktown
+10.000
+
+query III rowsort
+SELECT (x.active NOT IN (FALSE)), (x.active = FALSE), ((x.salary = 185001) AND (x.active = TRUE)) FROM (SELECT salary, active FROM people WHERE (department < 'Research')) x WHERE (x.active = FALSE)
+----
+0
+1
+0
+
+query II rowsort
+SELECT a.quantity, MIN(a.shipped) FROM orders a RIGHT JOIN orders b ON a.order_id = b.order_id GROUP BY a.quantity
+----
+1
+1
+10
+0
+2
+0
+4
+0
+5
+0
+
+query ITI rowsort
+SELECT a.person_id, (a.product || '-' || a.product), (CASE WHEN (a.person_id < (SELECT SUM(s.person_id) FROM orders s)) THEN a.person_id ELSE a.order_id END) FROM orders a WHERE (a.unit_price BETWEEN 11.98 AND 611.00)
+----
+1
+keyboard-keyboard
+1
+1
+mouse-mouse
+1
+3
+monitor-monitor
+3
+3
+mouse-mouse
+3
+5
+keyboard-keyboard
+5
+5
+monitor-monitor
+5
+
+query II nosort
+SELECT (x.salary - x.age), RANK() OVER (PARTITION BY x.name ORDER BY x.age, x.city, x.name, x.salary) FROM (SELECT age, city, name, salary FROM people WHERE (active)) x WHERE (x.city <> 'New York') ORDER BY 1, 2
+----
+141956
+1
+175961
+1
+177959
+1
+184964
+1
+187951
+1
+
+query TI rowsort
+SELECT b.name, (b.salary * a.id) FROM people a INNER JOIN people b ON a.salary = b.salary WHERE (b.score < 3.50)
+----
+
+query IITI nosort
+SELECT ((a.id * a.age) * (a.age / 3)), (a.salary >= 155000.00), (CASE WHEN ((a.hired = '1995-01-15') OR (a.salary <= 191999)) THEN (a.department || '-' || a.name) ELSE a.city END), RANK() OVER (PARTITION BY a.name ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired) FROM people a WHERE (((a.id IN (9, 10)) OR (a.name IN (SELECT s.department FROM people s WHERE (s.salary BETWEEN 154999 AND 264000)))) AND (NOT a.active)) ORDER BY 1, 2, 3, 4
+----
+10830
+0
+Analytics-Frances Allen
+1
+
+query TTR nosort
+SELECT 'x', x.ordered_on, LAG(x.unit_price) OVER (PARTITION BY x.shipped ORDER BY x.unit_price, x.ordered_on, x.order_id) FROM (SELECT unit_price, shipped, ordered_on, order_id FROM orders) x WHERE (x.unit_price IS NULL) ORDER BY 1, 2, 3 DESC
+----
+
+query TIRI rowsort
+SELECT a.name, a.age, AVG(a.age), MIN(a.id) FROM people a WHERE (a.active = FALSE) GROUP BY a.name, a.age
+----
+Donald Knuth
+61
+61.000
+6
+Edsger Dijkstra
+52
+52.000
+4
+Frances Allen
+57
+57.000
+10
+
+query TIT rowsort
+SELECT a.city, MAX(a.id), MAX(a.name) FROM people a WHERE (a.hired NOT BETWEEN '1998-06-11' AND '2005-03-30') GROUP BY a.city HAVING AVG(a.age) <> 3
+----
+Hampton
+7
+Katherine Johnson
+New York
+5
+Barbara Liskov
+Palo Alto
+6
+Donald Knuth
+Yorktown
+10
+Frances Allen
+
+query ITT nosort
+SELECT (a.person_id < 3), (CASE WHEN (a.product IS NULL) THEN a.product ELSE a.product END), a.product FROM orders a WHERE (NOT (a.product IN ('desk', 'mouse'))) ORDER BY 1, 2, 3
+----
+0
+cable
+cable
+0
+keyboard
+keyboard
+0
+laptop
+laptop
+0
+monitor
+monitor
+0
+monitor
+monitor
+1
+cable
+cable
+1
+keyboard
+keyboard
+1
+laptop
+laptop
+
+query IT rowsort
+SELECT active, department FROM people WHERE (city >= 'Hampton') INTERSECT SELECT active, department FROM people WHERE (age <= 28)
+----
+
+query III nosort
+SELECT a.id, (a.score NOT IN (9.50, 8.80, 9.10, NULL)), RANK() OVER (PARTITION BY a.salary ORDER BY a.id, a.name, a.age, a.city, a.department, a.salary, a.score, a.hired) FROM people a WHERE (NOT (a.salary > 192000.00)) ORDER BY 1, 2, 3
+----
+1
+0
+1
+2
+NULL
+1
+3
+NULL
+1
+4
+NULL
+1
+6
+NULL
+1
+7
+0
+1
+8
+0
+1
+9
+NULL
+1
+10
+NULL
+1
+
+query R rowsort
+SELECT AVG(a.order_id) FROM orders a HAVING COUNT(*) <= 2
+----
+
+query TIT rowsort
+SELECT a.city, (a.hired <= '2008-09-22'), (CASE WHEN (a.department LIKE 'Research') THEN a.department ELSE a.city END) FROM people a WHERE (a.id <> 4)
+----
+Cambridge
+1
+Cambridge
+Hampton
+1
+Hampton
+London
+1
+London
+London
+1
+Research
+London
+1
+Research
+New York
+0
+New York
+New York
+1
+New York
+Palo Alto
+1
+Research
+Yorktown
+1
+Yorktown
+
+query IT nosort
+SELECT CAST((CASE WHEN (a.quantity < 3) THEN a.person_id ELSE 4 END) AS INT), (a.product || '-' || a.product) FROM orders a WHERE (NOT (a.quantity >= (SELECT AVG(s.unit_price) FROM orders s))) ORDER BY 1, 2
+----
+1
+keyboard-keyboard
+1
+laptop-laptop
+3
+monitor-monitor
+3
+mouse-mouse
+4
+cable-cable
+4
+cable-cable
+4
+mouse-mouse
+5
+keyboard-keyboard
+5
+monitor-monitor
+7
+desk-desk
+9
+laptop-laptop
+10
+desk-desk
+

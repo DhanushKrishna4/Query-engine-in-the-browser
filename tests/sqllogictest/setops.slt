@@ -1,0 +1,167 @@
+# UNION, INTERSECT and EXCEPT.
+#
+# NULLs count as equal to each other here, as they do for DISTINCT and unlike a
+# comparison: a set operation asks "is this the same row?", not "are these
+# values equal?".
+
+load people data/people.csv
+load orders data/orders.csv
+
+query I rowsort
+SELECT id FROM people WHERE age > 45 UNION SELECT person_id FROM orders WHERE quantity > 4
+----
+10
+2
+4
+6
+8
+9
+
+query I rowsort
+SELECT id FROM people WHERE age > 45 UNION ALL SELECT person_id FROM orders WHERE quantity > 4
+----
+10
+2
+4
+6
+8
+9
+
+# UNION removes duplicates across *both* sides, including within one side.
+query I nosort
+SELECT COUNT(*) FROM (SELECT person_id FROM orders UNION SELECT person_id FROM orders) AS x
+----
+8
+
+query I nosort
+SELECT COUNT(*) FROM (SELECT person_id FROM orders UNION ALL SELECT person_id FROM orders) AS x
+----
+24
+
+query T rowsort
+SELECT city FROM people UNION SELECT product FROM orders
+----
+Austin
+Cambridge
+Hampton
+London
+New York
+Palo Alto
+Yorktown
+cable
+desk
+keyboard
+laptop
+monitor
+mouse
+
+query I rowsort
+SELECT id FROM people INTERSECT SELECT person_id FROM orders
+----
+1
+10
+2
+3
+5
+7
+8
+9
+
+query T rowsort
+SELECT department FROM people INTERSECT SELECT department FROM people WHERE age > 50
+----
+Analytics
+Research
+
+query I rowsort
+SELECT id FROM people EXCEPT SELECT person_id FROM orders
+----
+4
+6
+
+query T rowsort
+SELECT city FROM people EXCEPT SELECT city FROM people WHERE age > 45
+----
+Cambridge
+Hampton
+New York
+
+# Chained, left-associative.
+query I rowsort
+SELECT id FROM people UNION SELECT person_id FROM orders EXCEPT SELECT id FROM people WHERE age > 50
+----
+1
+2
+3
+5
+7
+8
+9
+
+# The two sides are coerced to a common type.
+query R rowsort
+SELECT CAST(quantity AS FLOAT) FROM orders WHERE order_id < 1003 UNION SELECT unit_price FROM orders WHERE order_id = 1006
+----
+1.000
+2.000
+7.990
+
+# NULLs are a value here: two NULL rows are the same row.
+query R rowsort
+SELECT score FROM people UNION SELECT score FROM people
+----
+7.000
+8.250
+8.400
+8.800
+9.100
+9.500
+9.900
+NULL
+
+query I nosort
+SELECT COUNT(*) FROM (SELECT shipped FROM orders UNION SELECT shipped FROM orders) AS x
+----
+3
+
+# Ordering applies to the combined result, not to either branch.
+query I nosort
+SELECT id FROM people WHERE age > 50 UNION SELECT person_id FROM orders WHERE quantity > 4 ORDER BY 1
+----
+2
+4
+6
+8
+10
+
+query I nosort
+SELECT id FROM people UNION SELECT person_id FROM orders ORDER BY 1 DESC LIMIT 3
+----
+10
+9
+8
+
+# A set operation inside a derived table.
+query I nosort
+SELECT COUNT(*) FROM (SELECT id FROM people EXCEPT SELECT person_id FROM orders) AS x
+----
+2
+
+# SQLite has no INTERSECT ALL or EXCEPT ALL, so the multiset forms are pinned
+# by hand rather than compared.
+#
+# INTERSECT ALL keeps min(left, right) copies of each value; against itself that
+# is every row. EXCEPT ALL keeps max(0, left - right): person 1 appears three
+# times on the left and twice on the right, leaving one, and so on -- five in
+# total.
+onlyif qe
+query I nosort
+SELECT COUNT(*) FROM (SELECT person_id FROM orders INTERSECT ALL SELECT person_id FROM orders) AS x
+----
+12
+
+onlyif qe
+query I nosort
+SELECT COUNT(*) FROM (SELECT person_id FROM orders EXCEPT ALL SELECT person_id FROM orders WHERE quantity > 1) AS x
+----
+5

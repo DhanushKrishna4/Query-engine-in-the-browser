@@ -1,0 +1,496 @@
+# ORDER BY, DISTINCT, and how they interact with LIMIT.
+#
+# These use nosort: the order *is* the answer. Keys are chosen to be unique or
+# fully tie-broken, since neither engine promises a stable sort.
+
+load people data/people.csv
+load orders data/orders.csv
+
+query TI nosort
+SELECT name, age FROM people ORDER BY age
+----
+Ada Lovelace
+36
+Barbara Liskov
+38
+Margaret Hamilton
+39
+Alan Turing
+41
+Katherine Johnson
+44
+Grace Hopper
+45
+Tim Berners-Lee
+49
+Edsger Dijkstra
+52
+Frances Allen
+57
+Donald Knuth
+61
+
+query TI nosort
+SELECT name, age FROM people ORDER BY age DESC
+----
+Donald Knuth
+61
+Frances Allen
+57
+Edsger Dijkstra
+52
+Tim Berners-Lee
+49
+Grace Hopper
+45
+Katherine Johnson
+44
+Alan Turing
+41
+Margaret Hamilton
+39
+Barbara Liskov
+38
+Ada Lovelace
+36
+
+# By output position, and by an alias the query invented.
+query TI nosort
+SELECT name, age AS years FROM people ORDER BY years
+----
+Ada Lovelace
+36
+Barbara Liskov
+38
+Margaret Hamilton
+39
+Alan Turing
+41
+Katherine Johnson
+44
+Grace Hopper
+45
+Tim Berners-Lee
+49
+Edsger Dijkstra
+52
+Frances Allen
+57
+Donald Knuth
+61
+
+query TI nosort
+SELECT name, age FROM people ORDER BY 2, 1
+----
+Ada Lovelace
+36
+Barbara Liskov
+38
+Margaret Hamilton
+39
+Alan Turing
+41
+Katherine Johnson
+44
+Grace Hopper
+45
+Tim Berners-Lee
+49
+Edsger Dijkstra
+52
+Frances Allen
+57
+Donald Knuth
+61
+
+# Multiple keys with different directions.
+query TTI nosort
+SELECT city, name, age FROM people ORDER BY city, age DESC
+----
+Austin
+Edsger Dijkstra
+52
+Cambridge
+Margaret Hamilton
+39
+Hampton
+Katherine Johnson
+44
+London
+Tim Berners-Lee
+49
+London
+Alan Turing
+41
+London
+Ada Lovelace
+36
+New York
+Grace Hopper
+45
+New York
+Barbara Liskov
+38
+Palo Alto
+Donald Knuth
+61
+Yorktown
+Frances Allen
+57
+
+# Sorting by something that is not selected: the key becomes a hidden column
+# and is trimmed off again.
+query T nosort
+SELECT name FROM people ORDER BY salary DESC
+----
+Barbara Liskov
+Grace Hopper
+Tim Berners-Lee
+Ada Lovelace
+Alan Turing
+Margaret Hamilton
+Edsger Dijkstra
+Donald Knuth
+Frances Allen
+Katherine Johnson
+
+query T nosort
+SELECT name FROM people ORDER BY age + salary
+----
+Katherine Johnson
+Frances Allen
+Donald Knuth
+Edsger Dijkstra
+Margaret Hamilton
+Alan Turing
+Ada Lovelace
+Tim Berners-Lee
+Grace Hopper
+Barbara Liskov
+
+# NULL placement. `score` has two NULLs; the default is NULLs first ascending
+# and last descending, which is what SQLite does.
+query TR nosort
+SELECT name, score FROM people ORDER BY score, name
+----
+Alan Turing
+NULL
+Tim Berners-Lee
+NULL
+Edsger Dijkstra
+7.000
+Grace Hopper
+8.250
+Frances Allen
+8.400
+Katherine Johnson
+8.800
+Margaret Hamilton
+9.100
+Ada Lovelace
+9.500
+Barbara Liskov
+9.500
+Donald Knuth
+9.900
+
+query TR nosort
+SELECT name, score FROM people ORDER BY score DESC, name
+----
+Donald Knuth
+9.900
+Ada Lovelace
+9.500
+Barbara Liskov
+9.500
+Margaret Hamilton
+9.100
+Katherine Johnson
+8.800
+Frances Allen
+8.400
+Grace Hopper
+8.250
+Edsger Dijkstra
+7.000
+Alan Turing
+NULL
+Tim Berners-Lee
+NULL
+
+query TR nosort
+SELECT name, score FROM people ORDER BY score NULLS LAST, name
+----
+Edsger Dijkstra
+7.000
+Grace Hopper
+8.250
+Frances Allen
+8.400
+Katherine Johnson
+8.800
+Margaret Hamilton
+9.100
+Ada Lovelace
+9.500
+Barbara Liskov
+9.500
+Donald Knuth
+9.900
+Alan Turing
+NULL
+Tim Berners-Lee
+NULL
+
+query TR nosort
+SELECT name, score FROM people ORDER BY score DESC NULLS FIRST, name
+----
+Alan Turing
+NULL
+Tim Berners-Lee
+NULL
+Donald Knuth
+9.900
+Ada Lovelace
+9.500
+Barbara Liskov
+9.500
+Margaret Hamilton
+9.100
+Katherine Johnson
+8.800
+Frances Allen
+8.400
+Grace Hopper
+8.250
+Edsger Dijkstra
+7.000
+
+# ORDER BY with LIMIT, which is what the top-N heap is for.
+query TI nosort
+SELECT name, age FROM people ORDER BY age LIMIT 3
+----
+Ada Lovelace
+36
+Barbara Liskov
+38
+Margaret Hamilton
+39
+
+query TI nosort
+SELECT name, age FROM people ORDER BY age DESC LIMIT 3
+----
+Donald Knuth
+61
+Frances Allen
+57
+Edsger Dijkstra
+52
+
+query TI nosort
+SELECT name, age FROM people ORDER BY age LIMIT 3 OFFSET 4
+----
+Katherine Johnson
+44
+Grace Hopper
+45
+Tim Berners-Lee
+49
+
+# A limit larger than the input, and a limit of zero.
+query TI nosort
+SELECT name, age FROM people ORDER BY age LIMIT 100
+----
+Ada Lovelace
+36
+Barbara Liskov
+38
+Margaret Hamilton
+39
+Alan Turing
+41
+Katherine Johnson
+44
+Grace Hopper
+45
+Tim Berners-Lee
+49
+Edsger Dijkstra
+52
+Frances Allen
+57
+Donald Knuth
+61
+
+query TI nosort
+SELECT name, age FROM people ORDER BY age LIMIT 0
+----
+
+# Ordering after a filter and after a join.
+query TI nosort
+SELECT name, age FROM people WHERE city = 'London' ORDER BY age DESC
+----
+Tim Berners-Lee
+49
+Alan Turing
+41
+Ada Lovelace
+36
+
+query TT nosort
+SELECT p.name, o.product FROM people p JOIN orders o ON o.person_id = p.id ORDER BY o.order_id
+----
+Ada Lovelace
+keyboard
+Alan Turing
+monitor
+Ada Lovelace
+mouse
+Katherine Johnson
+desk
+Barbara Liskov
+monitor
+Grace Hopper
+cable
+Barbara Liskov
+keyboard
+Tim Berners-Lee
+laptop
+Alan Turing
+mouse
+Margaret Hamilton
+cable
+Ada Lovelace
+laptop
+Frances Allen
+desk
+
+# Ordering an aggregate by one of its outputs.
+query TI nosort
+SELECT city, COUNT(*) AS n FROM people GROUP BY city ORDER BY n DESC, city
+----
+London
+3
+New York
+2
+Austin
+1
+Cambridge
+1
+Hampton
+1
+Palo Alto
+1
+Yorktown
+1
+
+query TI nosort
+SELECT city, COUNT(*) FROM people GROUP BY city ORDER BY COUNT(*) DESC, city
+----
+London
+3
+New York
+2
+Austin
+1
+Cambridge
+1
+Hampton
+1
+Palo Alto
+1
+Yorktown
+1
+
+query TR nosort
+SELECT department, AVG(salary) FROM people GROUP BY department ORDER BY 2
+----
+Analytics
+146500.000
+Research
+172500.000
+Engineering
+188500.000
+
+# DISTINCT.
+query T rowsort
+SELECT DISTINCT city FROM people
+----
+Austin
+Cambridge
+Hampton
+London
+New York
+Palo Alto
+Yorktown
+
+query T nosort
+SELECT DISTINCT city FROM people ORDER BY city
+----
+Austin
+Cambridge
+Hampton
+London
+New York
+Palo Alto
+Yorktown
+
+query TT rowsort
+SELECT DISTINCT city, department FROM people
+----
+Austin
+Research
+Cambridge
+Engineering
+Hampton
+Analytics
+London
+Engineering
+London
+Research
+New York
+Engineering
+Palo Alto
+Research
+Yorktown
+Analytics
+
+# NULLs are equal to each other for DISTINCT, so they collapse to one row.
+query R rowsort
+SELECT DISTINCT score FROM people
+----
+7.000
+8.250
+8.400
+8.800
+9.100
+9.500
+9.900
+NULL
+
+query I nosort
+SELECT COUNT(*) FROM (SELECT DISTINCT city FROM people) AS x
+----
+7
+
+query T nosort
+SELECT DISTINCT city FROM people ORDER BY city LIMIT 2
+----
+Austin
+Cambridge
+
+# DISTINCT over an expression.
+query I rowsort
+SELECT DISTINCT age / 10 FROM people
+----
+3
+4
+5
+6
+
+query T rowsort
+SELECT DISTINCT shipped FROM orders
+----
+0
+1
+NULL

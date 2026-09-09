@@ -1,0 +1,391 @@
+# GROUP BY, HAVING and the aggregate functions.
+
+load people data/people.csv
+load orders data/orders.csv
+
+# Global aggregates over the whole table.
+query I nosort
+SELECT COUNT(*) FROM people
+----
+10
+
+# COUNT(col) counts non-NULL values; two scores are NULL.
+query II nosort
+SELECT COUNT(*), COUNT(score) FROM people
+----
+10
+8
+
+query IIRII nosort
+SELECT COUNT(*), SUM(age), AVG(age), MIN(age), MAX(age) FROM people
+----
+10
+462
+46.200
+36
+61
+
+query RRR nosort
+SELECT SUM(score), AVG(score), MIN(score) FROM people
+----
+70.450
+8.806
+7.000
+
+query TT nosort
+SELECT MIN(name), MAX(name) FROM people
+----
+Ada Lovelace
+Tim Berners-Lee
+
+query TT nosort
+SELECT MIN(hired), MAX(hired) FROM people
+----
+1993-04-02
+2010-07-04
+
+# The empty-input trap: COUNT is 0 while every other aggregate is NULL, and the
+# query still produces exactly one row.
+query IIRII nosort
+SELECT COUNT(*), SUM(age), AVG(age), MIN(age), MAX(age) FROM people WHERE 1 = 0
+----
+0
+NULL
+NULL
+NULL
+NULL
+
+# With a GROUP BY, no rows means no groups -- so genuinely zero rows out.
+query TI rowsort
+SELECT city, COUNT(*) FROM people WHERE 1 = 0 GROUP BY city
+----
+
+# COUNT DISTINCT.
+query III nosort
+SELECT COUNT(city), COUNT(DISTINCT city), COUNT(DISTINCT department) FROM people
+----
+10
+7
+3
+
+query II nosort
+SELECT COUNT(score), COUNT(DISTINCT score) FROM people
+----
+8
+7
+
+query II nosort
+SELECT SUM(DISTINCT quantity), COUNT(DISTINCT product) FROM orders
+----
+22
+6
+
+# Grouping.
+query TI rowsort
+SELECT city, COUNT(*) FROM people GROUP BY city
+----
+Austin
+1
+Cambridge
+1
+Hampton
+1
+London
+3
+New York
+2
+Palo Alto
+1
+Yorktown
+1
+
+query TIR rowsort
+SELECT department, COUNT(*), AVG(salary) FROM people GROUP BY department
+----
+Analytics
+2
+146500.000
+Engineering
+4
+188500.000
+Research
+4
+172500.000
+
+query TTI rowsort
+SELECT city, department, COUNT(*) FROM people GROUP BY city, department
+----
+Austin
+Research
+1
+Cambridge
+Engineering
+1
+Hampton
+Analytics
+1
+London
+Engineering
+1
+London
+Research
+2
+New York
+Engineering
+2
+Palo Alto
+Research
+1
+Yorktown
+Analytics
+1
+
+query TI rowsort
+SELECT product, SUM(quantity) FROM orders GROUP BY product
+----
+cable
+15
+desk
+3
+keyboard
+3
+laptop
+2
+monitor
+3
+mouse
+6
+
+query TR rowsort
+SELECT product, SUM(unit_price * quantity) FROM orders GROUP BY product
+----
+cable
+119.850
+desk
+1836.000
+keyboard
+269.970
+laptop
+3798.000
+monitor
+1048.500
+mouse
+145.500
+
+# A NULL grouping key is a group of its own, and all NULLs land in it.
+query RI rowsort
+SELECT score, COUNT(*) FROM people GROUP BY score
+----
+7.000
+1
+8.250
+1
+8.400
+1
+8.800
+1
+9.100
+1
+9.500
+2
+9.900
+1
+NULL
+2
+
+query II rowsort
+SELECT shipped, COUNT(*) FROM orders GROUP BY shipped
+----
+0
+4
+1
+7
+NULL
+1
+
+# Grouping by an expression, matched syntactically in the SELECT list.
+query II rowsort
+SELECT age / 10, COUNT(*) FROM people GROUP BY age / 10
+----
+3
+3
+4
+4
+5
+2
+6
+1
+
+query TI rowsort
+SELECT CASE WHEN salary > 180000 THEN 'high' ELSE 'normal' END, COUNT(*) FROM people GROUP BY CASE WHEN salary > 180000 THEN 'high' ELSE 'normal' END
+----
+high
+4
+normal
+6
+
+# A grouping key can be used in a larger expression in the SELECT list.
+query TI rowsort
+SELECT city || '!', COUNT(*) FROM people GROUP BY city
+----
+Austin!
+1
+Cambridge!
+1
+Hampton!
+1
+London!
+3
+New York!
+2
+Palo Alto!
+1
+Yorktown!
+1
+
+# HAVING filters groups, after aggregation.
+query TI rowsort
+SELECT city, COUNT(*) FROM people GROUP BY city HAVING COUNT(*) > 1
+----
+London
+3
+New York
+2
+
+query TI rowsort
+SELECT department, COUNT(*) FROM people GROUP BY department HAVING AVG(salary) > 170000
+----
+Engineering
+4
+Research
+4
+
+query TI rowsort
+SELECT product, SUM(quantity) FROM orders GROUP BY product HAVING SUM(quantity) >= 4 AND product <> 'cable'
+----
+mouse
+6
+
+# HAVING can reference an aggregate that the SELECT list does not.
+query T rowsort
+SELECT city FROM people GROUP BY city HAVING MAX(age) > 50
+----
+Austin
+Palo Alto
+Yorktown
+
+# WHERE narrows rows before grouping; HAVING narrows groups after.
+query TI rowsort
+SELECT city, COUNT(*) FROM people WHERE active GROUP BY city HAVING COUNT(*) > 1
+----
+London
+3
+New York
+2
+
+# Aggregates over a join.
+query TI rowsort
+SELECT p.name, COUNT(*) FROM people p JOIN orders o ON p.id = o.person_id GROUP BY p.name
+----
+Ada Lovelace
+3
+Alan Turing
+2
+Barbara Liskov
+2
+Frances Allen
+1
+Grace Hopper
+1
+Katherine Johnson
+1
+Margaret Hamilton
+1
+Tim Berners-Lee
+1
+
+query TR rowsort
+SELECT p.city, SUM(o.unit_price * o.quantity) FROM people p JOIN orders o ON p.id = o.person_id GROUP BY p.city
+----
+Cambridge
+39.950
+Hampton
+612.000
+London
+4472.980
+New York
+868.890
+Yorktown
+1224.000
+
+# An outer join feeding an aggregate: the NULL-padded rows must not be counted
+# by COUNT(o.order_id), though COUNT(*) still counts the row.
+query TII rowsort
+SELECT p.name, COUNT(*), COUNT(o.order_id) FROM people p LEFT JOIN orders o ON p.id = o.person_id GROUP BY p.name
+----
+Ada Lovelace
+3
+3
+Alan Turing
+2
+2
+Barbara Liskov
+2
+2
+Donald Knuth
+1
+0
+Edsger Dijkstra
+1
+0
+Frances Allen
+1
+1
+Grace Hopper
+1
+1
+Katherine Johnson
+1
+1
+Margaret Hamilton
+1
+1
+Tim Berners-Lee
+1
+1
+
+# LIMIT applies after aggregation. Which groups it keeps is only defined once
+# there is an ORDER BY, so this asks for more than there are.
+query TI rowsort
+SELECT city, COUNT(*) FROM people GROUP BY city LIMIT 100
+----
+Austin
+1
+Cambridge
+1
+Hampton
+1
+London
+3
+New York
+2
+Palo Alto
+1
+Yorktown
+1
+
+# Group emission order is not something SQL defines, so it is not in the
+# differential corpus -- but this engine does guarantee one: groups come out in
+# the order they were first seen, because the hash table is only an index into
+# an insertion-ordered vector. Without that, repeated runs of the same query
+# could return different rows under a LIMIT.
+onlyif qe
+query TI nosort
+SELECT city, COUNT(*) FROM people GROUP BY city LIMIT 3
+----
+London
+3
+New York
+2
+Austin
+1

@@ -1,0 +1,13 @@
+order_id,person_id,product,quantity,unit_price,ordered_on,shipped
+1001,1,keyboard,2,89.99,2024-01-15,true
+1002,3,monitor,1,349.50,2024-01-17,true
+1003,1,mouse,4,24.25,2024-02-02,false
+1004,7,desk,1,612.00,2024-02-11,true
+1005,5,monitor,2,349.50,2024-03-05,true
+1006,2,cable,10,7.99,2024-03-19,false
+1007,5,keyboard,1,89.99,2024-04-01,true
+1008,9,laptop,1,1899.00,2024-04-22,
+1009,3,mouse,2,24.25,2024-05-08,true
+1010,8,cable,5,7.99,2024-05-30,false
+1011,1,laptop,1,1899.00,2024-06-14,true
+1012,10,desk,2,612.00,2024-07-03,false

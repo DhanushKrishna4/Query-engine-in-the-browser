@@ -1,0 +1,962 @@
+# Window functions.
+#
+# A window function does not promise to preserve input order, and both engines
+# emit rows in the window's own sorted order -- so these use nosort where the
+# ordering is determined by the window, and an explicit ORDER BY where it is
+# not.
+
+load people data/people.csv
+load orders data/orders.csv
+
+# --- ranking ---------------------------------------------------------------
+
+query TI nosort
+SELECT name, ROW_NUMBER() OVER (ORDER BY age) FROM people
+----
+Ada Lovelace
+1
+Barbara Liskov
+2
+Margaret Hamilton
+3
+Alan Turing
+4
+Katherine Johnson
+5
+Grace Hopper
+6
+Tim Berners-Lee
+7
+Edsger Dijkstra
+8
+Frances Allen
+9
+Donald Knuth
+10
+
+query TII nosort
+SELECT name, age, ROW_NUMBER() OVER (ORDER BY age DESC) FROM people
+----
+Donald Knuth
+61
+1
+Frances Allen
+57
+2
+Edsger Dijkstra
+52
+3
+Tim Berners-Lee
+49
+4
+Grace Hopper
+45
+5
+Katherine Johnson
+44
+6
+Alan Turing
+41
+7
+Margaret Hamilton
+39
+8
+Barbara Liskov
+38
+9
+Ada Lovelace
+36
+10
+
+# RANK leaves gaps after a tie, DENSE_RANK does not. `score` has two rows at
+# 9.5 and two NULLs, which is exactly the interesting case.
+query TRII nosort
+SELECT name, score, RANK() OVER (ORDER BY score), DENSE_RANK() OVER (ORDER BY score) FROM people
+----
+Alan Turing
+NULL
+1
+1
+Tim Berners-Lee
+NULL
+1
+1
+Edsger Dijkstra
+7.000
+3
+2
+Grace Hopper
+8.250
+4
+3
+Frances Allen
+8.400
+5
+4
+Katherine Johnson
+8.800
+6
+5
+Margaret Hamilton
+9.100
+7
+6
+Ada Lovelace
+9.500
+8
+7
+Barbara Liskov
+9.500
+8
+7
+Donald Knuth
+9.900
+10
+8
+
+query TTII nosort
+SELECT name, city, RANK() OVER (PARTITION BY city ORDER BY age), ROW_NUMBER() OVER (PARTITION BY city ORDER BY age) FROM people
+----
+Edsger Dijkstra
+Austin
+1
+1
+Margaret Hamilton
+Cambridge
+1
+1
+Katherine Johnson
+Hampton
+1
+1
+Ada Lovelace
+London
+1
+1
+Alan Turing
+London
+2
+2
+Tim Berners-Lee
+London
+3
+3
+Barbara Liskov
+New York
+1
+1
+Grace Hopper
+New York
+2
+2
+Donald Knuth
+Palo Alto
+1
+1
+Frances Allen
+Yorktown
+1
+1
+
+# Partitioning by a column with repeats.
+query TTI nosort
+SELECT name, department, ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) FROM people
+----
+Frances Allen
+Analytics
+1
+Katherine Johnson
+Analytics
+2
+Barbara Liskov
+Engineering
+1
+Grace Hopper
+Engineering
+2
+Ada Lovelace
+Engineering
+3
+Margaret Hamilton
+Engineering
+4
+Tim Berners-Lee
+Research
+1
+Alan Turing
+Research
+2
+Edsger Dijkstra
+Research
+3
+Donald Knuth
+Research
+4
+
+# --- LAG and LEAD ----------------------------------------------------------
+
+query TII nosort
+SELECT name, age, LAG(age) OVER (ORDER BY age) FROM people
+----
+Ada Lovelace
+36
+NULL
+Barbara Liskov
+38
+36
+Margaret Hamilton
+39
+38
+Alan Turing
+41
+39
+Katherine Johnson
+44
+41
+Grace Hopper
+45
+44
+Tim Berners-Lee
+49
+45
+Edsger Dijkstra
+52
+49
+Frances Allen
+57
+52
+Donald Knuth
+61
+57
+
+query TII nosort
+SELECT name, age, LEAD(age) OVER (ORDER BY age) FROM people
+----
+Ada Lovelace
+36
+38
+Barbara Liskov
+38
+39
+Margaret Hamilton
+39
+41
+Alan Turing
+41
+44
+Katherine Johnson
+44
+45
+Grace Hopper
+45
+49
+Tim Berners-Lee
+49
+52
+Edsger Dijkstra
+52
+57
+Frances Allen
+57
+61
+Donald Knuth
+61
+NULL
+
+query TII nosort
+SELECT name, age, LAG(age, 2) OVER (ORDER BY age) FROM people
+----
+Ada Lovelace
+36
+NULL
+Barbara Liskov
+38
+NULL
+Margaret Hamilton
+39
+36
+Alan Turing
+41
+38
+Katherine Johnson
+44
+39
+Grace Hopper
+45
+41
+Tim Berners-Lee
+49
+44
+Edsger Dijkstra
+52
+45
+Frances Allen
+57
+49
+Donald Knuth
+61
+52
+
+query TII nosort
+SELECT name, age, LAG(age, 1, 0) OVER (ORDER BY age) FROM people
+----
+Ada Lovelace
+36
+0
+Barbara Liskov
+38
+36
+Margaret Hamilton
+39
+38
+Alan Turing
+41
+39
+Katherine Johnson
+44
+41
+Grace Hopper
+45
+44
+Tim Berners-Lee
+49
+45
+Edsger Dijkstra
+52
+49
+Frances Allen
+57
+52
+Donald Knuth
+61
+57
+
+# The edge of a partition has no neighbour, so the default applies per
+# partition rather than per query.
+query TTII nosort
+SELECT name, city, age, LAG(age) OVER (PARTITION BY city ORDER BY age) FROM people
+----
+Edsger Dijkstra
+Austin
+52
+NULL
+Margaret Hamilton
+Cambridge
+39
+NULL
+Katherine Johnson
+Hampton
+44
+NULL
+Ada Lovelace
+London
+36
+NULL
+Alan Turing
+London
+41
+36
+Tim Berners-Lee
+London
+49
+41
+Barbara Liskov
+New York
+38
+NULL
+Grace Hopper
+New York
+45
+38
+Donald Knuth
+Palo Alto
+61
+NULL
+Frances Allen
+Yorktown
+57
+NULL
+
+# --- aggregates over a window ----------------------------------------------
+
+# No ORDER BY means the frame is the whole partition.
+query TII nosort
+SELECT name, age, SUM(age) OVER () FROM people ORDER BY name
+----
+Ada Lovelace
+36
+462
+Alan Turing
+41
+462
+Barbara Liskov
+38
+462
+Donald Knuth
+61
+462
+Edsger Dijkstra
+52
+462
+Frances Allen
+57
+462
+Grace Hopper
+45
+462
+Katherine Johnson
+44
+462
+Margaret Hamilton
+39
+462
+Tim Berners-Lee
+49
+462
+
+query TTI nosort
+SELECT name, city, COUNT(*) OVER (PARTITION BY city) FROM people ORDER BY name
+----
+Ada Lovelace
+London
+3
+Alan Turing
+London
+3
+Barbara Liskov
+New York
+2
+Donald Knuth
+Palo Alto
+1
+Edsger Dijkstra
+Austin
+1
+Frances Allen
+Yorktown
+1
+Grace Hopper
+New York
+2
+Katherine Johnson
+Hampton
+1
+Margaret Hamilton
+Cambridge
+1
+Tim Berners-Lee
+London
+3
+
+# With an ORDER BY the default frame runs from the start of the partition to
+# the current row's peers, which makes it a running total.
+query TII nosort
+SELECT name, age, SUM(age) OVER (ORDER BY age) FROM people
+----
+Ada Lovelace
+36
+36
+Barbara Liskov
+38
+74
+Margaret Hamilton
+39
+113
+Alan Turing
+41
+154
+Katherine Johnson
+44
+198
+Grace Hopper
+45
+243
+Tim Berners-Lee
+49
+292
+Edsger Dijkstra
+52
+344
+Frances Allen
+57
+401
+Donald Knuth
+61
+462
+
+# Ties share a frame under the default RANGE, so both 9.5 rows get the same sum.
+query TRR nosort
+SELECT name, score, SUM(score) OVER (ORDER BY score) FROM people
+----
+Alan Turing
+NULL
+NULL
+Tim Berners-Lee
+NULL
+NULL
+Edsger Dijkstra
+7.000
+7.000
+Grace Hopper
+8.250
+15.250
+Frances Allen
+8.400
+23.650
+Katherine Johnson
+8.800
+32.450
+Margaret Hamilton
+9.100
+41.550
+Ada Lovelace
+9.500
+60.550
+Barbara Liskov
+9.500
+60.550
+Donald Knuth
+9.900
+70.450
+
+query TIR nosort
+SELECT name, age, AVG(salary) OVER (PARTITION BY department) FROM people ORDER BY name
+----
+Ada Lovelace
+36
+188500.000
+Alan Turing
+41
+172500.000
+Barbara Liskov
+38
+188500.000
+Donald Knuth
+61
+172500.000
+Edsger Dijkstra
+52
+172500.000
+Frances Allen
+57
+146500.000
+Grace Hopper
+45
+188500.000
+Katherine Johnson
+44
+146500.000
+Margaret Hamilton
+39
+188500.000
+Tim Berners-Lee
+49
+172500.000
+
+query TIII nosort
+SELECT name, age, MIN(age) OVER (PARTITION BY city), MAX(age) OVER (PARTITION BY city) FROM people ORDER BY name
+----
+Ada Lovelace
+36
+36
+49
+Alan Turing
+41
+36
+49
+Barbara Liskov
+38
+38
+45
+Donald Knuth
+61
+61
+61
+Edsger Dijkstra
+52
+52
+52
+Frances Allen
+57
+57
+57
+Grace Hopper
+45
+38
+45
+Katherine Johnson
+44
+44
+44
+Margaret Hamilton
+39
+39
+39
+Tim Berners-Lee
+49
+36
+49
+
+# --- explicit frames -------------------------------------------------------
+
+query TII nosort
+SELECT name, age, SUM(age) OVER (ORDER BY age ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM people
+----
+Ada Lovelace
+36
+74
+Barbara Liskov
+38
+113
+Margaret Hamilton
+39
+118
+Alan Turing
+41
+124
+Katherine Johnson
+44
+130
+Grace Hopper
+45
+138
+Tim Berners-Lee
+49
+146
+Edsger Dijkstra
+52
+158
+Frances Allen
+57
+170
+Donald Knuth
+61
+118
+
+query TII nosort
+SELECT name, age, SUM(age) OVER (ORDER BY age ROWS UNBOUNDED PRECEDING) FROM people
+----
+Ada Lovelace
+36
+36
+Barbara Liskov
+38
+74
+Margaret Hamilton
+39
+113
+Alan Turing
+41
+154
+Katherine Johnson
+44
+198
+Grace Hopper
+45
+243
+Tim Berners-Lee
+49
+292
+Edsger Dijkstra
+52
+344
+Frances Allen
+57
+401
+Donald Knuth
+61
+462
+
+query TII nosort
+SELECT name, age, COUNT(*) OVER (ORDER BY age ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM people
+----
+Ada Lovelace
+36
+1
+Barbara Liskov
+38
+2
+Margaret Hamilton
+39
+3
+Alan Turing
+41
+3
+Katherine Johnson
+44
+3
+Grace Hopper
+45
+3
+Tim Berners-Lee
+49
+3
+Edsger Dijkstra
+52
+3
+Frances Allen
+57
+3
+Donald Knuth
+61
+3
+
+query TII nosort
+SELECT name, age, SUM(age) OVER (ORDER BY age ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) FROM people
+----
+Ada Lovelace
+36
+462
+Barbara Liskov
+38
+426
+Margaret Hamilton
+39
+388
+Alan Turing
+41
+349
+Katherine Johnson
+44
+308
+Grace Hopper
+45
+264
+Tim Berners-Lee
+49
+219
+Edsger Dijkstra
+52
+170
+Frances Allen
+57
+118
+Donald Knuth
+61
+61
+
+# ROWS counts rows, so tied rows get different frames -- unlike the RANGE
+# default above.
+query TRR nosort
+SELECT name, score, SUM(score) OVER (ORDER BY score ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM people
+----
+Alan Turing
+NULL
+NULL
+Tim Berners-Lee
+NULL
+NULL
+Edsger Dijkstra
+7.000
+7.000
+Grace Hopper
+8.250
+15.250
+Frances Allen
+8.400
+23.650
+Katherine Johnson
+8.800
+32.450
+Margaret Hamilton
+9.100
+41.550
+Ada Lovelace
+9.500
+51.050
+Barbara Liskov
+9.500
+60.550
+Donald Knuth
+9.900
+70.450
+
+# --- several windows in one query ------------------------------------------
+#
+# Each window sorts, so with more than one the output order is whichever sorted
+# last -- undefined by SQL and different between the two engines. These say
+# explicitly what order they want.
+
+query TIII nosort
+SELECT name, ROW_NUMBER() OVER (ORDER BY age), ROW_NUMBER() OVER (ORDER BY salary), age FROM people ORDER BY name
+----
+Ada Lovelace
+1
+7
+36
+Alan Turing
+4
+6
+41
+Barbara Liskov
+2
+10
+38
+Donald Knuth
+10
+3
+61
+Edsger Dijkstra
+8
+4
+52
+Frances Allen
+9
+2
+57
+Grace Hopper
+6
+9
+45
+Katherine Johnson
+5
+1
+44
+Margaret Hamilton
+3
+5
+39
+Tim Berners-Lee
+7
+8
+49
+
+query TTII nosort
+SELECT name, city, ROW_NUMBER() OVER (PARTITION BY city ORDER BY name), COUNT(*) OVER (PARTITION BY city) FROM people ORDER BY name
+----
+Ada Lovelace
+London
+1
+3
+Alan Turing
+London
+2
+3
+Barbara Liskov
+New York
+1
+2
+Donald Knuth
+Palo Alto
+1
+1
+Edsger Dijkstra
+Austin
+1
+1
+Frances Allen
+Yorktown
+1
+1
+Grace Hopper
+New York
+2
+2
+Katherine Johnson
+Hampton
+1
+1
+Margaret Hamilton
+Cambridge
+1
+1
+Tim Berners-Lee
+London
+3
+3
+
+# --- windows over other operators ------------------------------------------
+
+query TII nosort
+SELECT name, age, ROW_NUMBER() OVER (ORDER BY age) FROM people WHERE age > 40
+----
+Alan Turing
+41
+1
+Katherine Johnson
+44
+2
+Grace Hopper
+45
+3
+Tim Berners-Lee
+49
+4
+Edsger Dijkstra
+52
+5
+Frances Allen
+57
+6
+Donald Knuth
+61
+7
+
+query TTI nosort
+SELECT p.name, o.product, ROW_NUMBER() OVER (PARTITION BY p.name ORDER BY o.order_id) FROM people p JOIN orders o ON o.person_id = p.id
+----
+Ada Lovelace
+keyboard
+1
+Ada Lovelace
+mouse
+2
+Ada Lovelace
+laptop
+3
+Alan Turing
+monitor
+1
+Alan Turing
+mouse
+2
+Barbara Liskov
+monitor
+1
+Barbara Liskov
+keyboard
+2
+Frances Allen
+desk
+1
+Grace Hopper
+cable
+1
+Katherine Johnson
+desk
+1
+Margaret Hamilton
+cable
+1
+Tim Berners-Lee
+laptop
+1
+
+query TI nosort
+SELECT x.name, ROW_NUMBER() OVER (ORDER BY x.age) FROM (SELECT name, age FROM people WHERE age < 50) AS x
+----
+Ada Lovelace
+1
+Barbara Liskov
+2
+Margaret Hamilton
+3
+Alan Turing
+4
+Katherine Johnson
+5
+Grace Hopper
+6
+Tim Berners-Lee
+7
+
+# A window feeding an ORDER BY and a LIMIT.
+query TI nosort
+SELECT name, ROW_NUMBER() OVER (ORDER BY age) AS n FROM people ORDER BY n LIMIT 3
+----
+Ada Lovelace
+1
+Barbara Liskov
+2
+Margaret Hamilton
+3

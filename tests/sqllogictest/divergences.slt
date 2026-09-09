@@ -1,0 +1,70 @@
+# Places where this engine deliberately disagrees with SQLite.
+#
+# Every record here is `onlyif qe`, so `tools/gen_expected.py` never touches it
+# and `tools/fuzz_queries.py` never generates anything in these shapes. Each one
+# is a design decision, and each is written down here so that a future
+# disagreement in the differential corpus can be recognised as a bug rather
+# than shrugged off as "SQLite is just like that".
+#
+# The recurring theme: SQLite is dynamically typed and has no BOOLEAN, DATE or
+# DECIMAL type. This engine is statically typed, so it follows the standard
+# where the two part ways.
+
+load people data/people.csv
+
+# 1. CASE unifies its branch types; SQLite returns whichever branch fired.
+#
+#    Standard SQL gives a CASE expression one result type, the unification of
+#    every branch. With a REAL branch and an INTEGER branch that type is REAL,
+#    so the division below is floating-point and yields 0.5. SQLite hands back
+#    the INTEGER 1 from the ELSE and does integer division, yielding 0.
+onlyif qe
+query R nosort
+SELECT (CASE WHEN 1 = 2 THEN 1.5 ELSE 1 END) / 2
+----
+0.500
+
+# 2. Floats render in shortest round-trip form, not to 15 significant digits.
+#
+#    SQLite prints 0.3 here, which does not round-trip back to the value it
+#    holds. PostgreSQL 12+ and DuckDB both switched to shortest round-trip for
+#    the same reason: the printed form should reproduce the stored value.
+onlyif qe
+query T nosort
+SELECT CAST(0.1 + 0.2 AS TEXT)
+----
+0.30000000000000004
+
+# 3. A literal in an IN list is folded into the column's type.
+#
+#    SQLite compares across storage classes and finds no match, so `2 IN (1,'2')`
+#    is false there. Here the string literal is folded to INT32 at bind time, so
+#    it matches. This is the same literal folding that makes `WHERE d >
+#    '2024-01-01'` compare dates, and it only ever applies to literals -- two
+#    columns of mismatched type remain an error.
+onlyif qe
+query I nosort
+SELECT 2 IN (1, '2')
+----
+1
+
+# 4. Integer arithmetic is evaluated at 64 bits regardless of column width.
+#
+#    `id` and `salary` are both INT32 because the CSV loader saw values that fit
+#    in 32 bits -- a storage decision, not a request for 32-bit arithmetic.
+#    Multiplying them overflows an i32 but is computed exactly at i64.
+onlyif qe
+query I nosort
+SELECT id * salary * (salary - 36) FROM people WHERE id = 7
+----
+141112216000
+
+# 5. Comparisons do NOT widen, so an INT32 column stays INT32 on the left of a
+#    predicate. That keeps zone-map bounds and (later) dictionary codes
+#    comparable in their native width.
+onlyif qe
+query I rowsort
+SELECT id FROM people WHERE salary > 190000
+----
+2
+5

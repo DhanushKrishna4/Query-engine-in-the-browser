@@ -1,0 +1,180 @@
+# Diagnostics. These are engine-specific by definition -- SQLite's messages are
+# its own -- so every record here is a `statement error`, which the generator
+# never touches.
+
+load people data/people.csv
+load orders data/orders.csv
+
+statement error no such column `naem`
+SELECT naem FROM people
+
+statement error no such table `peple`
+SELECT * FROM peple
+
+statement error no column `nope` in `people`
+SELECT people.nope FROM people
+
+statement error no table or alias named `people`
+SELECT people.name FROM people p
+
+# WHERE is bound before SELECT, so output aliases are not visible in it.
+statement error no such column `x`
+SELECT age AS x FROM people WHERE x > 1
+
+statement error requires a boolean expression
+SELECT * FROM people WHERE age
+
+statement error cannot combine
+SELECT name + 1 FROM people
+
+statement error LIKE requires UTF8
+SELECT age LIKE 'x' FROM people
+
+statement error is not a valid DATE32
+SELECT * FROM people WHERE hired > '2002-13-99'
+
+# SQL the standard says is an error but SQLite answers with NULL. This engine
+# follows the standard, which is exactly why the case is here and not in the
+# differential corpus.
+statement error division by zero
+SELECT 1 / 0
+
+statement error division by zero
+SELECT 1.0 / 0.0
+
+statement error arithmetic overflow
+SELECT 9223372036854775807 + 1
+
+# Aggregation.
+statement error column `name` must appear in the GROUP BY clause
+SELECT name FROM people GROUP BY city
+
+# A global aggregate collapses to one row, so there is no place for a per-row
+# column even without a GROUP BY.
+statement error column `name` must appear in the GROUP BY clause
+SELECT name, COUNT(*) FROM people
+
+statement error aggregate functions are not allowed in WHERE
+SELECT city FROM people WHERE COUNT(*) > 1
+
+statement error aggregate functions cannot be nested
+SELECT SUM(COUNT(id)) FROM people
+
+statement error aggregate functions are not allowed in GROUP BY
+SELECT city FROM people GROUP BY COUNT(id)
+
+statement error `SUM` does not accept `*`
+SELECT SUM(*) FROM people
+
+statement error takes exactly one argument
+SELECT COUNT(id, name) FROM people
+
+statement error SUM is not defined for UTF8
+SELECT SUM(name) FROM people
+
+statement error AVG is not defined for UTF8
+SELECT AVG(city) FROM people
+
+# Joins.
+statement error USING is not supported yet
+SELECT * FROM people JOIN orders USING (id)
+
+# people and orders share no column names, so ambiguity needs a self-join.
+statement error column `id` is ambiguous
+SELECT id FROM people a JOIN people b ON a.id = b.id
+
+statement error table alias `p` is used more than once
+SELECT p.id FROM people p JOIN people p ON 1 = 1
+
+statement error JOIN ... ON requires a boolean expression
+SELECT * FROM people JOIN orders ON people.id
+
+# Ordering.
+statement error ORDER BY position 0 is out of range
+SELECT name FROM people ORDER BY 0
+
+statement error ORDER BY position 5 is out of range
+SELECT name, age FROM people ORDER BY 5
+
+# Sorting a DISTINCT by something not selected would make which duplicate
+# survives arbitrary.
+statement error ORDER BY must name an output column of a SELECT DISTINCT
+SELECT DISTINCT city FROM people ORDER BY age
+
+statement error ORDER BY must name an output column or position here
+SELECT city, COUNT(*) FROM people GROUP BY city ORDER BY salary
+
+# Set operations.
+statement error must have the same number of columns
+SELECT id, name FROM people UNION SELECT order_id FROM orders
+
+statement error on one side of the UNION
+SELECT name FROM people UNION SELECT order_id FROM orders
+
+statement error must have the same number of columns
+SELECT id FROM people INTERSECT SELECT order_id, product FROM orders
+
+statement error common table expressions (WITH) is not supported yet
+WITH x AS (SELECT 1) SELECT * FROM x
+
+# Windows.
+statement error window functions in an aggregate query are not supported yet
+SELECT city, COUNT(*), ROW_NUMBER() OVER () FROM people GROUP BY city
+
+statement error `ROW_NUMBER` takes no arguments
+SELECT ROW_NUMBER(id) OVER () FROM people
+
+statement error no window function named `nope`
+SELECT nope() OVER () FROM people
+
+statement error a RANGE frame with a numeric offset is not supported yet
+SELECT SUM(age) OVER (ORDER BY id RANGE BETWEEN 1 PRECEDING AND CURRENT ROW) FROM people
+
+statement error DISTINCT is not allowed in a window function
+SELECT COUNT(DISTINCT id) OVER () FROM people
+
+# Subqueries.
+statement error must return one column
+SELECT (SELECT id, name FROM orders) FROM people
+
+statement error the subquery of an IN must return one column
+SELECT id FROM people WHERE id IN (SELECT order_id, person_id FROM orders)
+
+statement error returned 12 rows, but must return at most one
+SELECT (SELECT order_id FROM orders) FROM people
+
+# A correlated subquery is only rewritable as EXISTS or IN in a WHERE clause.
+# Anywhere else there is nothing to turn it into.
+statement error cannot be rewritten as a join
+SELECT name, (SELECT COUNT(*) FROM orders WHERE orders.person_id = people.id) FROM people
+
+statement error cannot be rewritten as a join
+SELECT name FROM people WHERE (SELECT COUNT(*) FROM orders WHERE orders.person_id = people.id) > 1
+
+# A semi-join filters rows, so it can only replace a subquery that is a
+# top-level conjunct. Under an OR there is nothing to turn it into.
+statement error cannot be rewritten as a join
+SELECT name FROM people WHERE age > 90 OR EXISTS (SELECT 1 FROM orders WHERE orders.person_id = people.id)
+
+# Pulling a correlated predicate out from under a GROUP BY would change what it
+# filters, so that shape is left alone too.
+statement error cannot be rewritten as a join
+SELECT name FROM people WHERE EXISTS (SELECT 1 FROM orders WHERE orders.person_id = people.id GROUP BY orders.product)
+
+statement error a derived table needs an alias
+SELECT * FROM (SELECT 1)
+
+statement error unexpected token
+SELECT FROM people
+
+statement error expected `NULL` after `IS`
+SELECT * FROM people WHERE age IS 5
+
+# SQLite's CAST is lenient and answers 0 for text that is not a number. This
+# engine raises: a typo in a query should be reported, not silently turned into
+# a value that then flows through the rest of the plan.
+statement error cannot cast value `abc` to INT32
+SELECT CAST('abc' AS INT)
+
+statement error cannot cast value
+SELECT CAST('not-a-date' AS DATE)

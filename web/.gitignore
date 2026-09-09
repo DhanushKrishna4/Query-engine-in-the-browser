@@ -1,0 +1,4 @@
+# All produced by tools/build_web.sh.
+pkg/
+data/
+vendor/

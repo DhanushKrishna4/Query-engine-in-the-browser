@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup target add wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The engine is meant to build with nothing but core + std, on a target
+      # with no operating system under it. If that ever stops being true, it
+      # should stop being true loudly.
+      - name: The engine has no dependencies
+        run: |
+          deps=$(cargo tree -p engine --edges normal --depth 1 | tail -n +2)
+          if [ -n "$deps" ]; then
+            echo "the engine crate grew a dependency:" >&2
+            echo "$deps" >&2
+            exit 1
+          fi
+
+      - name: Build for wasm32
+        run: cargo build -p engine --target wasm32-unknown-unknown
+
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+      # The sqllogictest corpus, run through the CLI as well as through
+      # `cargo test`, because the CLI is how a person actually runs it.
+      - name: The corpus
+        run: |
+          cargo build --release --bin qe
+          ./target/release/qe $(printf -- '--slt %s ' tests/sqllogictest/*.slt)
+
+      # SQLite is the oracle for every expected result in the corpus. Checking
+      # them here means a divergence shows up as a CI failure rather than as a
+      # stale file nobody regenerated.
+      - name: Expectations still match SQLite
+        run: python3 tools/gen_expected.py --check tests/sqllogictest/*.slt

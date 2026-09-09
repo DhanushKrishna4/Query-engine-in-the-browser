@@ -1,0 +1,12 @@
+[package]
+name = "qe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "qe"
+path = "src/main.rs"
+
+[dependencies]
+engine = { path = "../engine" }

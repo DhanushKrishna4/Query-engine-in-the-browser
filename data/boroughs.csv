@@ -1,0 +1,6 @@
+borough,region,zone_id,congestion_fee
+Manhattan,Core,1,2.75
+Brooklyn,Inner,2,1.50
+Queens,Inner,3,1.50
+Bronx,Outer,4,0.75
+Staten Island,Outer,5,0.00

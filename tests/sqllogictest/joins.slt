@@ -1,0 +1,477 @@
+# Joins, including the NULL semantics that separate an equi-join from grouping.
+
+load people data/people.csv
+load orders data/orders.csv
+
+query TT rowsort
+SELECT people.name, orders.product FROM people JOIN orders ON people.id = orders.person_id
+----
+Ada Lovelace
+keyboard
+Ada Lovelace
+laptop
+Ada Lovelace
+mouse
+Alan Turing
+monitor
+Alan Turing
+mouse
+Barbara Liskov
+keyboard
+Barbara Liskov
+monitor
+Frances Allen
+desk
+Grace Hopper
+cable
+Katherine Johnson
+desk
+Margaret Hamilton
+cable
+Tim Berners-Lee
+laptop
+
+query ITI rowsort
+SELECT o.order_id, p.name, o.quantity FROM orders o JOIN people p ON o.person_id = p.id
+----
+1001
+Ada Lovelace
+2
+1002
+Alan Turing
+1
+1003
+Ada Lovelace
+4
+1004
+Katherine Johnson
+1
+1005
+Barbara Liskov
+2
+1006
+Grace Hopper
+10
+1007
+Barbara Liskov
+1
+1008
+Tim Berners-Lee
+1
+1009
+Alan Turing
+2
+1010
+Margaret Hamilton
+5
+1011
+Ada Lovelace
+1
+1012
+Frances Allen
+2
+
+# LEFT JOIN preserves every left row, padding the right with NULLs. Several
+# people have never ordered anything.
+query TT rowsort
+SELECT p.name, o.product FROM people p LEFT JOIN orders o ON p.id = o.person_id
+----
+Ada Lovelace
+keyboard
+Ada Lovelace
+laptop
+Ada Lovelace
+mouse
+Alan Turing
+monitor
+Alan Turing
+mouse
+Barbara Liskov
+keyboard
+Barbara Liskov
+monitor
+Donald Knuth
+NULL
+Edsger Dijkstra
+NULL
+Frances Allen
+desk
+Grace Hopper
+cable
+Katherine Johnson
+desk
+Margaret Hamilton
+cable
+Tim Berners-Lee
+laptop
+
+query T rowsort
+SELECT p.name FROM people p LEFT JOIN orders o ON p.id = o.person_id WHERE o.order_id IS NULL
+----
+Donald Knuth
+Edsger Dijkstra
+
+# RIGHT JOIN is the mirror image.
+query TT rowsort
+SELECT p.name, o.product FROM orders o RIGHT JOIN people p ON p.id = o.person_id
+----
+Ada Lovelace
+keyboard
+Ada Lovelace
+laptop
+Ada Lovelace
+mouse
+Alan Turing
+monitor
+Alan Turing
+mouse
+Barbara Liskov
+keyboard
+Barbara Liskov
+monitor
+Donald Knuth
+NULL
+Edsger Dijkstra
+NULL
+Frances Allen
+desk
+Grace Hopper
+cable
+Katherine Johnson
+desk
+Margaret Hamilton
+cable
+Tim Berners-Lee
+laptop
+
+query TI rowsort
+SELECT p.city, o.order_id FROM people p RIGHT JOIN orders o ON p.id = o.person_id
+----
+Cambridge
+1010
+Hampton
+1004
+London
+1001
+London
+1002
+London
+1003
+London
+1008
+London
+1009
+London
+1011
+New York
+1005
+New York
+1006
+New York
+1007
+Yorktown
+1012
+
+# FULL JOIN keeps unmatched rows from both sides.
+query TT rowsort
+SELECT p.name, o.product FROM people p FULL JOIN orders o ON p.id = o.person_id
+----
+Ada Lovelace
+keyboard
+Ada Lovelace
+laptop
+Ada Lovelace
+mouse
+Alan Turing
+monitor
+Alan Turing
+mouse
+Barbara Liskov
+keyboard
+Barbara Liskov
+monitor
+Donald Knuth
+NULL
+Edsger Dijkstra
+NULL
+Frances Allen
+desk
+Grace Hopper
+cable
+Katherine Johnson
+desk
+Margaret Hamilton
+cable
+Tim Berners-Lee
+laptop
+
+query I nosort
+SELECT COUNT(*) FROM people p FULL JOIN orders o ON p.id = o.person_id
+----
+14
+
+# CROSS JOIN and its comma spelling produce the same thing.
+query I nosort
+SELECT COUNT(*) FROM people CROSS JOIN orders
+----
+120
+
+query I nosort
+SELECT COUNT(*) FROM people, orders
+----
+120
+
+# A condition in WHERE across a comma join is an inner join by another name.
+query TT rowsort
+SELECT people.name, orders.product FROM people, orders WHERE people.id = orders.person_id
+----
+Ada Lovelace
+keyboard
+Ada Lovelace
+laptop
+Ada Lovelace
+mouse
+Alan Turing
+monitor
+Alan Turing
+mouse
+Barbara Liskov
+keyboard
+Barbara Liskov
+monitor
+Frances Allen
+desk
+Grace Hopper
+cable
+Katherine Johnson
+desk
+Margaret Hamilton
+cable
+Tim Berners-Lee
+laptop
+
+# Self join.
+query TT rowsort
+SELECT a.name, b.name FROM people a JOIN people b ON a.city = b.city AND a.id < b.id
+----
+Ada Lovelace
+Alan Turing
+Ada Lovelace
+Tim Berners-Lee
+Alan Turing
+Tim Berners-Lee
+Grace Hopper
+Barbara Liskov
+
+# An equi-join must never match NULL against NULL. Two people have a NULL
+# score, and they must not join to each other or to themselves.
+query TT rowsort
+SELECT a.name, b.name FROM people a JOIN people b ON a.score = b.score
+----
+Ada Lovelace
+Ada Lovelace
+Ada Lovelace
+Barbara Liskov
+Barbara Liskov
+Ada Lovelace
+Barbara Liskov
+Barbara Liskov
+Donald Knuth
+Donald Knuth
+Edsger Dijkstra
+Edsger Dijkstra
+Frances Allen
+Frances Allen
+Grace Hopper
+Grace Hopper
+Katherine Johnson
+Katherine Johnson
+Margaret Hamilton
+Margaret Hamilton
+
+query I nosort
+SELECT COUNT(*) FROM people a JOIN people b ON a.score = b.score
+----
+10
+
+# ...but a LEFT JOIN still emits those rows, padded.
+query TI rowsort
+SELECT a.name, b.id FROM people a LEFT JOIN people b ON a.score = b.score AND a.id <> b.id
+----
+Ada Lovelace
+5
+Alan Turing
+NULL
+Barbara Liskov
+1
+Donald Knuth
+NULL
+Edsger Dijkstra
+NULL
+Frances Allen
+NULL
+Grace Hopper
+NULL
+Katherine Johnson
+NULL
+Margaret Hamilton
+NULL
+Tim Berners-Lee
+NULL
+
+# Non-equi join: nothing to hash on, so this goes through the nested loop.
+query TT rowsort
+SELECT a.name, b.name FROM people a JOIN people b ON a.age < b.age - 15
+----
+Ada Lovelace
+Donald Knuth
+Ada Lovelace
+Edsger Dijkstra
+Ada Lovelace
+Frances Allen
+Alan Turing
+Donald Knuth
+Alan Turing
+Frances Allen
+Barbara Liskov
+Donald Knuth
+Barbara Liskov
+Frances Allen
+Grace Hopper
+Donald Knuth
+Katherine Johnson
+Donald Knuth
+Margaret Hamilton
+Donald Knuth
+Margaret Hamilton
+Frances Allen
+
+# Mixed: one equi-key plus a residual inequality.
+query TTI rowsort
+SELECT p.name, o.product, o.quantity FROM people p JOIN orders o ON p.id = o.person_id AND o.quantity > 1
+----
+Ada Lovelace
+keyboard
+2
+Ada Lovelace
+mouse
+4
+Alan Turing
+mouse
+2
+Barbara Liskov
+monitor
+2
+Frances Allen
+desk
+2
+Grace Hopper
+cable
+10
+Margaret Hamilton
+cable
+5
+
+# The same residual under a LEFT JOIN: rows failing it are still emitted padded,
+# which is the difference between a join condition and a WHERE filter.
+query TT rowsort
+SELECT p.name, o.product FROM people p LEFT JOIN orders o ON p.id = o.person_id AND o.quantity > 1
+----
+Ada Lovelace
+keyboard
+Ada Lovelace
+mouse
+Alan Turing
+mouse
+Barbara Liskov
+monitor
+Donald Knuth
+NULL
+Edsger Dijkstra
+NULL
+Frances Allen
+desk
+Grace Hopper
+cable
+Katherine Johnson
+NULL
+Margaret Hamilton
+cable
+Tim Berners-Lee
+NULL
+
+query TT rowsort
+SELECT p.name, o.product FROM people p LEFT JOIN orders o ON p.id = o.person_id WHERE o.quantity > 1
+----
+Ada Lovelace
+keyboard
+Ada Lovelace
+mouse
+Alan Turing
+mouse
+Barbara Liskov
+monitor
+Frances Allen
+desk
+Grace Hopper
+cable
+Margaret Hamilton
+cable
+
+# Multi-key join.
+query TT rowsort
+SELECT a.name, b.name FROM people a JOIN people b ON a.city = b.city AND a.department = b.department AND a.id <> b.id
+----
+Alan Turing
+Tim Berners-Lee
+Barbara Liskov
+Grace Hopper
+Grace Hopper
+Barbara Liskov
+Tim Berners-Lee
+Alan Turing
+
+# Three tables.
+query TTT rowsort
+SELECT p.name, o.product, q.product FROM people p JOIN orders o ON p.id = o.person_id JOIN orders q ON q.person_id = p.id AND q.order_id > o.order_id
+----
+Ada Lovelace
+keyboard
+laptop
+Ada Lovelace
+keyboard
+mouse
+Ada Lovelace
+mouse
+laptop
+Alan Turing
+monitor
+mouse
+Barbara Liskov
+monitor
+keyboard
+
+# Join feeding a filter and a projection.
+query TR rowsort
+SELECT p.name, o.unit_price * o.quantity FROM people p JOIN orders o ON p.id = o.person_id WHERE o.unit_price > 100
+----
+Ada Lovelace
+1899.000
+Alan Turing
+349.500
+Barbara Liskov
+699.000
+Frances Allen
+1224.000
+Katherine Johnson
+612.000
+Tim Berners-Lee
+1899.000
+
+query T rowsort
+SELECT p.name FROM people p JOIN orders o ON p.id = o.person_id WHERE o.ordered_on >= '2024-05-01'
+----
+Ada Lovelace
+Alan Turing
+Frances Allen
+Margaret Hamilton

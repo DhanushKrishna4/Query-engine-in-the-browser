@@ -1,0 +1,9 @@
+[package]
+name = "engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The engine crate is deliberately dependency-free. It must build and run
+# natively (and later on wasm32-unknown-unknown) with nothing but core + std.
+[dependencies]

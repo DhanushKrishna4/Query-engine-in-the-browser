@@ -1,0 +1,313 @@
+# Subqueries: scalar, EXISTS, IN, and derived tables -- correlated and not.
+
+load people data/people.csv
+load orders data/orders.csv
+
+# --- uncorrelated scalar subqueries ----------------------------------------
+
+query I nosort
+SELECT (SELECT COUNT(*) FROM orders)
+----
+12
+
+query TI rowsort
+SELECT name, (SELECT COUNT(*) FROM orders) FROM people WHERE id <= 3
+----
+Ada Lovelace
+12
+Alan Turing
+12
+Grace Hopper
+12
+
+query T rowsort
+SELECT name FROM people WHERE age > (SELECT AVG(age) FROM people)
+----
+Donald Knuth
+Edsger Dijkstra
+Frances Allen
+Tim Berners-Lee
+
+query T rowsort
+SELECT name FROM people WHERE salary = (SELECT MAX(salary) FROM people)
+----
+Barbara Liskov
+
+# A subquery over no rows is NULL, not an error and not zero.
+query T nosort
+SELECT (SELECT name FROM people WHERE id = 999)
+----
+NULL
+
+query I rowsort
+SELECT id FROM people WHERE age > (SELECT MAX(age) FROM people WHERE 1 = 0)
+----
+
+# --- uncorrelated EXISTS ---------------------------------------------------
+
+query I rowsort
+SELECT id FROM people WHERE EXISTS (SELECT 1 FROM orders WHERE quantity > 5)
+----
+1
+10
+2
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT id FROM people WHERE NOT EXISTS (SELECT 1 FROM orders WHERE quantity > 500)
+----
+1
+10
+2
+3
+4
+5
+6
+7
+8
+9
+
+query I rowsort
+SELECT id FROM people WHERE EXISTS (SELECT 1 FROM orders WHERE quantity > 500)
+----
+
+# --- uncorrelated IN -------------------------------------------------------
+
+query T rowsort
+SELECT name FROM people WHERE id IN (SELECT person_id FROM orders)
+----
+Ada Lovelace
+Alan Turing
+Barbara Liskov
+Frances Allen
+Grace Hopper
+Katherine Johnson
+Margaret Hamilton
+Tim Berners-Lee
+
+query T rowsort
+SELECT name FROM people WHERE id NOT IN (SELECT person_id FROM orders)
+----
+Donald Knuth
+Edsger Dijkstra
+
+query T rowsort
+SELECT name FROM people WHERE id IN (SELECT person_id FROM orders WHERE quantity > 2)
+----
+Ada Lovelace
+Grace Hopper
+Margaret Hamilton
+
+query T rowsort
+SELECT name FROM people WHERE city IN (SELECT city FROM people WHERE age > 50)
+----
+Donald Knuth
+Edsger Dijkstra
+Frances Allen
+
+# The NOT IN trap with a subquery supplying the list: `shipped` has a NULL, so
+# nothing can be NOT IN it.
+query I rowsort
+SELECT order_id FROM orders WHERE shipped NOT IN (SELECT shipped FROM orders)
+----
+
+query I rowsort
+SELECT order_id FROM orders WHERE shipped IN (SELECT shipped FROM orders WHERE order_id = 1001)
+----
+1001
+1002
+1004
+1005
+1007
+1009
+1011
+
+# --- correlated EXISTS -----------------------------------------------------
+
+query T rowsort
+SELECT name FROM people WHERE EXISTS (SELECT 1 FROM orders WHERE orders.person_id = people.id)
+----
+Ada Lovelace
+Alan Turing
+Barbara Liskov
+Frances Allen
+Grace Hopper
+Katherine Johnson
+Margaret Hamilton
+Tim Berners-Lee
+
+query T rowsort
+SELECT name FROM people WHERE NOT EXISTS (SELECT 1 FROM orders WHERE orders.person_id = people.id)
+----
+Donald Knuth
+Edsger Dijkstra
+
+query T rowsort
+SELECT name FROM people WHERE EXISTS (SELECT 1 FROM orders WHERE orders.person_id = people.id AND orders.quantity > 1)
+----
+Ada Lovelace
+Alan Turing
+Barbara Liskov
+Frances Allen
+Grace Hopper
+Margaret Hamilton
+
+query T rowsort
+SELECT name FROM people WHERE EXISTS (SELECT 1 FROM orders o WHERE o.person_id = people.id AND o.unit_price > people.salary / 1000)
+----
+Ada Lovelace
+Alan Turing
+Barbara Liskov
+Frances Allen
+Katherine Johnson
+Tim Berners-Lee
+
+# A person with several orders must appear once, not once per order.
+query I nosort
+SELECT COUNT(*) FROM people WHERE EXISTS (SELECT 1 FROM orders WHERE orders.person_id = people.id)
+----
+8
+
+# Correlated EXISTS combined with an ordinary predicate.
+query T rowsort
+SELECT name FROM people WHERE city = 'London' AND EXISTS (SELECT 1 FROM orders WHERE orders.person_id = people.id)
+----
+Ada Lovelace
+Alan Turing
+Tim Berners-Lee
+
+query T rowsort
+SELECT name FROM people WHERE age > 40 AND NOT EXISTS (SELECT 1 FROM orders WHERE orders.person_id = people.id)
+----
+Donald Knuth
+Edsger Dijkstra
+
+# --- correlated IN ---------------------------------------------------------
+
+query T rowsort
+SELECT p.name FROM people p WHERE p.id IN (SELECT o.person_id FROM orders o WHERE o.unit_price > 100)
+----
+Ada Lovelace
+Alan Turing
+Barbara Liskov
+Frances Allen
+Katherine Johnson
+Tim Berners-Lee
+
+query T rowsort
+SELECT p.name FROM people p WHERE p.department IN (SELECT q.department FROM people q WHERE q.age > 50)
+----
+Alan Turing
+Donald Knuth
+Edsger Dijkstra
+Frances Allen
+Katherine Johnson
+Tim Berners-Lee
+
+# --- derived tables --------------------------------------------------------
+
+query TI rowsort
+SELECT x.city, x.n FROM (SELECT city, COUNT(*) AS n FROM people GROUP BY city) AS x WHERE x.n > 1
+----
+London
+3
+New York
+2
+
+query TI rowsort
+SELECT x.name, x.age FROM (SELECT name, age FROM people WHERE age > 40) AS x
+----
+Alan Turing
+41
+Donald Knuth
+61
+Edsger Dijkstra
+52
+Frances Allen
+57
+Grace Hopper
+45
+Katherine Johnson
+44
+Tim Berners-Lee
+49
+
+query TI rowsort
+SELECT x.department, x.total FROM (SELECT department, SUM(salary) AS total FROM people GROUP BY department) AS x WHERE x.total > 300000
+----
+Engineering
+754000
+Research
+690000
+
+# A derived table joined to a base table.
+query TI rowsort
+SELECT p.name, x.n FROM people p JOIN (SELECT person_id, COUNT(*) AS n FROM orders GROUP BY person_id) AS x ON x.person_id = p.id
+----
+Ada Lovelace
+3
+Alan Turing
+2
+Barbara Liskov
+2
+Frances Allen
+1
+Grace Hopper
+1
+Katherine Johnson
+1
+Margaret Hamilton
+1
+Tim Berners-Lee
+1
+
+# Nested derived tables.
+query TI rowsort
+SELECT y.city, y.n FROM (SELECT x.city, x.n FROM (SELECT city, COUNT(*) AS n FROM people GROUP BY city) AS x) AS y WHERE y.n >= 2
+----
+London
+3
+New York
+2
+
+# A subquery inside a derived table.
+query T rowsort
+SELECT x.name FROM (SELECT name FROM people WHERE id IN (SELECT person_id FROM orders)) AS x
+----
+Ada Lovelace
+Alan Turing
+Barbara Liskov
+Frances Allen
+Grace Hopper
+Katherine Johnson
+Margaret Hamilton
+Tim Berners-Lee
+
+# --- subqueries alongside joins and aggregates -----------------------------
+
+query TI rowsort
+SELECT p.name, COUNT(*) FROM people p JOIN orders o ON o.person_id = p.id WHERE EXISTS (SELECT 1 FROM orders q WHERE q.person_id = p.id AND q.quantity > 1) GROUP BY p.name
+----
+Ada Lovelace
+3
+Alan Turing
+2
+Barbara Liskov
+2
+Frances Allen
+1
+Grace Hopper
+1
+Margaret Hamilton
+1
+
+query I nosort
+SELECT COUNT(*) FROM people WHERE id IN (SELECT person_id FROM orders) AND city = 'London'
+----
+3

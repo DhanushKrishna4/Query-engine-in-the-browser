@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>benchmark · query engine vs sql.js</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>this engine <span class="dim">vs</span> sql.js</h1>
+  <p class="sub">The same rows and the same queries, in the same tab, on the same clock.
+     sql.js is SQLite compiled to WebAssembly — a row store with twenty-five years of
+     work behind it. It wins several of these outright, and the ones it wins are as
+     interesting as the ones it does not.</p>
+</header>
+
+<main>
+  <section class="panel">
+    <div class="row">
+      <label class="slider-label" for="rows">rows</label>
+      <select id="rows">
+        <option value="50000">50,000</option>
+        <option value="200000" selected>200,000</option>
+        <option value="500000">500,000</option>
+      </select>
+      <label class="slider-label" for="runs">runs per query</label>
+      <select id="runs">
+        <option value="3">3</option>
+        <option value="5" selected>5</option>
+        <option value="9">9</option>
+      </select>
+      <button id="go" class="primary">Run the benchmark</button>
+      <a href="index.html" class="slider-label" style="margin-left:auto;color:var(--accent)">← back to the engine</a>
+    </div>
+    <div id="status" class="tab-body"><p class="empty">loading both engines…</p></div>
+  </section>
+
+  <section class="panel" id="results-panel" hidden>
+    <div class="panel-head"><h2>results</h2><span class="hint" id="method"></span></div>
+    <div class="tab-body" id="table"></div>
+  </section>
+
+  <section class="panel" id="notes-panel" hidden>
+    <div class="panel-head"><h2>what the numbers mean</h2></div>
+    <div class="tab-body" id="notes"></div>
+  </section>
+</main>
+
+<script src="vendor/sql-wasm.js"></script>
+<script type="module" src="bench.js"></script>
+</body>
+</html>

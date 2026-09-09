@@ -1,0 +1,11 @@
+id,name,age,city,department,salary,score,hired,active
+1,Ada Lovelace,36,London,Engineering,185000,9.5,2001-05-01,true
+2,Grace Hopper,45,New York,Engineering,192000,8.25,1999-11-30,true
+3,Alan Turing,41,London,Research,178000,,2003-02-14,true
+4,Edsger Dijkstra,52,Austin,Research,169000,7.0,,false
+5,Barbara Liskov,38,New York,Engineering,201000,9.5,2010-07-04,true
+6,Donald Knuth,61,Palo Alto,Research,155000,9.9,1995-01-15,false
+7,Katherine Johnson,44,Hampton,Analytics,142000,8.8,2008-09-22,true
+8,Margaret Hamilton,39,Cambridge,Engineering,176000,9.1,2005-03-30,true
+9,Tim Berners-Lee,49,London,Research,188000,,1998-06-11,true
+10,Frances Allen,57,Yorktown,Analytics,151000,8.4,1993-04-02,false

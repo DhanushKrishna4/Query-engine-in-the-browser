@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>query engine in the browser</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>query engine <span class="dim">in the browser</span></h1>
+  <p class="sub">A SQL engine written from scratch in Rust, compiled to WebAssembly.
+     No server: the parser, the optimizer and the operators all run in this tab.</p>
+</header>
+
+<main>
+  <section class="panel" id="catalog-panel">
+    <div class="panel-head">
+      <h2>tables</h2>
+      <span class="hint" id="load-status">loading…</span>
+    </div>
+    <div id="catalog" class="catalog"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>query</h2>
+      <span class="hint">⌘/Ctrl + Enter to run</span>
+    </div>
+    <textarea id="sql" spellcheck="false" rows="5"></textarea>
+    <div class="row">
+      <button id="run" class="primary">Run</button>
+      <select id="examples" aria-label="example queries"></select>
+      <span id="timing" class="timing"></span>
+    </div>
+  </section>
+
+  <section class="panel" id="output">
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="results">results</button>
+      <button class="tab" data-tab="plan">plan</button>
+      <button class="tab" data-tab="pipeline">pipeline</button>
+      <button class="tab" data-tab="trace">optimizer trace</button>
+      <button class="tab" data-tab="storage">storage</button>
+      <button class="tab" data-tab="index">index</button>
+    </nav>
+    <div id="error" class="error" hidden></div>
+    <div class="tab-body" id="tab-results"></div>
+    <div class="tab-body" id="tab-plan" hidden></div>
+    <div class="tab-body" id="tab-pipeline" hidden></div>
+    <div class="tab-body" id="tab-trace" hidden></div>
+    <div class="tab-body" id="tab-storage" hidden></div>
+    <div class="tab-body" id="tab-index" hidden></div>
+  </section>
+</main>
+
+<footer>
+  <span id="build"></span>
+  &nbsp;&middot;&nbsp; <a href="bench.html" style="color:var(--accent)">benchmark against sql.js &rarr;</a>
+</footer>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
