@@ -1,26 +1,42 @@
-# query-engine
+# Query engine in the browser
 
-An analytical SQL query engine written from scratch in Rust: hand-written lexer
-and parser, binder, columnar storage, and a batched pull-based executor. No SQL
-parser crates, no DataFusion/Polars/DuckDB, no Arrow. Eventually compiled to
-wasm and shipped as a static site where every pipeline stage is inspectable.
+### **→ [dhanushkrishna4.github.io/Query-engine-in-the-browser](https://dhanushkrishna4.github.io/Query-engine-in-the-browser/)**
 
-**Status: build-order steps 1-14 are done.** Lexer, parser, columnar storage
-with a CSV loader, binder with full type checking, a batched pull-based executor
-with a vectorized expression evaluator, hash/nested-loop/semi/anti joins,
-GROUP BY with aggregates, subqueries with decorrelation, ORDER BY with a
-top-N heap, DISTINCT, set operations, window functions, zone-map row-group
-pruning, a rule-based optimizer whose every rewrite is recorded, and cost-based
-join ordering over real statistics -- HyperLogLog distinct counts, equi-depth
-histograms and most-common-value lists. Differential testing against SQLite
-throughout.
+An analytical SQL query engine written from scratch in Rust, compiled to
+WebAssembly and running entirely in a browser tab. There is no backend: the
+lexer, the parser, the binder, the optimizer and every operator execute in the
+page. Open the link, type a query, and watch each stage of the pipeline -- the
+plan, every optimizer rewrite, the row groups it skipped, the B+ tree it
+descended, and what each operator actually cost.
 
-Headline ratios, all measured in one process against the same engine with one
-thing turned off: **5.3x** from vectorized evaluation, **12x** from zone maps on
-a clustered predicate, **130x** from predicate pushdown on a join, **1.7x** from
-cost-based join ordering on a badly-written one, **110x** from turning a large
-`IN (SELECT ...)` into a semi-join, **6.6x** from a top-N heap replacing a full
-sort.
+No SQL parser crates, no DataFusion/Polars/DuckDB, no Arrow. The engine crate
+has **zero dependencies** and CI fails if it grows one.
+
+**Status: the twenty build-order steps are done**, with real exceptions rather
+than a clean sweep -- merge join was named in step 7 and never built, the
+storage layer has no compression encodings of its own, and CTEs are parsed only
+to be rejected by name. Those and twenty others are written down in
+[Deliberate gaps](#deliberate-gaps); nothing is claimed there that is not
+true here.
+
+Headline ratios, every one measured in a single sitting against the same engine
+with one thing turned off -- so they are comparable to each other, which they
+were not when each was taken on the day its feature landed:
+
+| turning off | costs | on |
+| --- | ---: | --- |
+| vectorized evaluation | **4.8x** | ten filters and projections over a million rows |
+| predicate pushdown | **132.7x** | a join whose filter sat above it |
+| the semi-join rewrite | **113.6x** | `IN (SELECT ...)` returning ~26,000 values |
+| zone maps | **9.5x** | a clustered predicate matching 1% of rows |
+| the B+ tree index | **13.7x** | a predicate on an unclustered column matching 963 rows in a million |
+| the top-N heap | **6.2x** | two sort keys with `LIMIT 20 OFFSET 100` |
+| cost-based join ordering | **1.7x** | a join written in the wrong order |
+| bloom filters | **349x** | an absent value inside every row group's range |
+
+And against [sql.js](#against-sqljs) — SQLite compiled to WebAssembly — over
+200,000 rows in the same tab: 12 of 14 measurable queries went this way, up to
+36x on filtered aggregates. The two it lost are in that section, with why.
 
 Every operator reports what the optimizer predicted beside what it actually
 produced, because the gap between them is the most informative number a query
@@ -29,6 +45,8 @@ optimizer has and almost nothing shows it to you.
 ```
 crates/engine     the whole pipeline. no dependencies at all, builds for wasm32.
 crates/cli        native REPL -- the primary development surface.
+crates/wasm       the wasm boundary. the only crate that knows JavaScript exists.
+web/              the page: editor, plan, pipeline, storage, index, benchmark.
 data/             small sample tables.
 benches/          benchmark query sets.
 tests/sqllogictest/   the differential corpus.
@@ -71,8 +89,11 @@ CSV or Parquet and decides by the file's first four bytes.
 Run one test file: `qe --slt tests/sqllogictest/null.slt`.
 Benchmark: `qe --load trips=/tmp/trips.csv --bench benches/taxi.sql`.
 
-In a browser: `tools/build_web.sh --serve`, then http://localhost:8137 for the
-engine and `/bench.html` for the head-to-head against sql.js.
+In a browser, without installing anything:
+**[the live site](https://dhanushkrishna4.github.io/Query-engine-in-the-browser/)**,
+and **[/bench.html](https://dhanushkrishna4.github.io/Query-engine-in-the-browser/bench.html)**
+for the head-to-head against sql.js. To run that same page locally against your
+own build, `tools/build_web.sh --serve` serves it on http://localhost:8137.
 
 For volume, `tools/gen_sample.py 1000000 > /tmp/trips.csv` writes a synthetic
 NYC-taxi-shaped CSV. Real datasets are never committed -- in the browser they
@@ -635,6 +656,10 @@ rather than as a dependency. Nothing in `crates/` knows it exists.
 
 ## In the browser
 
+Running at
+**[dhanushkrishna4.github.io/Query-engine-in-the-browser](https://dhanushkrishna4.github.io/Query-engine-in-the-browser/)**,
+or locally against your own build:
+
 ```bash
 tools/build_web.sh --serve      # http://localhost:8137
 ```
@@ -816,6 +841,9 @@ order on both sides.
 
 ## Against sql.js
 
+**[Run it yourself](https://dhanushkrishna4.github.io/Query-engine-in-the-browser/bench.html)**
+-- the numbers below are from one machine and yours will differ. Locally:
+
 ```bash
 tools/build_web.sh --serve      # then open /bench.html
 ```
@@ -906,6 +934,9 @@ small measurement, it is no measurement, and the page now says so instead of
 printing a ratio.
 
 ## Deploying
+
+Live at
+**[dhanushkrishna4.github.io/Query-engine-in-the-browser](https://dhanushkrishna4.github.io/Query-engine-in-the-browser/)**.
 
 The site is static: a `.wasm`, four files, the sample data and sql.js. Nothing
 runs on a server, so there is no server to deploy -- `tools/build_web.sh`
