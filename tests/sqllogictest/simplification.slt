@@ -269,3 +269,104 @@ SELECT COUNT(*) FROM people p FULL JOIN orders o ON p.id = o.person_id
 WHERE o.product IS NULL OR p.name IS NULL
 ----
 2
+
+# --- common subexpression elimination ---------------------------------------
+#
+# The rewrite computes a repeated subexpression once in a projection below.
+# Nothing about the answer may change, which is the only thing these check --
+# the plan shape is asserted in the unit tests.
+
+query II
+SELECT (age + salary), (age + salary) * 2 FROM people ORDER BY id LIMIT 4
+----
+185036
+370072
+192045
+384090
+178041
+356082
+169052
+338104
+
+query III
+SELECT (age * 2), (age * 2) + 1, (age * 2) * (age * 2) FROM people ORDER BY id LIMIT 3
+----
+72
+73
+5184
+90
+91
+8100
+82
+83
+6724
+
+# Different columns, same shape: `a + b` and `b + a` are not the same key, and
+# neither is `age + salary` from a different relation.
+query II
+SELECT (age + salary), (salary + age) FROM people ORDER BY id LIMIT 3
+----
+185036
+185036
+192045
+192045
+178041
+178041
+
+# A guarded division inside CASE must not be lifted out of its guard. Every row
+# with age 0 would divide by zero if it were.
+query II
+SELECT CASE WHEN age > 0 THEN salary / age ELSE 0 END,
+       CASE WHEN age > 0 THEN salary / age ELSE 1 END
+FROM people ORDER BY id LIMIT 4
+----
+5138
+5138
+4266
+4266
+4341
+4341
+3250
+3250
+
+# The same shape on the right of an AND, which is also evaluated lazily.
+query I
+SELECT COUNT(*) FROM people
+WHERE (age > 0 AND salary / age > 1000) AND (age > 0 AND salary / age > 2000)
+----
+10
+
+# Repeated string expressions.
+query TT
+SELECT (name || '-' || city), (name || '-' || city) FROM people ORDER BY id LIMIT 3
+----
+Ada Lovelace-London
+Ada Lovelace-London
+Grace Hopper-New York
+Grace Hopper-New York
+Alan Turing-London
+Alan Turing-London
+
+# Repeated inside a filter as well as a projection.
+query II
+SELECT (age + 1), (age + 1) * 3 FROM people WHERE (age + 1) > 45 ORDER BY id
+----
+46
+138
+53
+159
+62
+186
+50
+150
+58
+174
+
+# NULLs through a hoisted expression.
+query IR
+SELECT id, (score * 2) FROM people WHERE (score * 2) IS NULL ORDER BY id
+----
+3
+NULL
+9
+NULL

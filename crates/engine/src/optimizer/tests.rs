@@ -767,3 +767,250 @@ fn a_derived_table_names_its_columns() {
     );
     assert!(after.contains("SubqueryAlias x"), "{after}");
 }
+
+// ---------------------------------------------------------------------------
+// Predicate simplification and contradiction detection
+// ---------------------------------------------------------------------------
+
+fn simplify(e: &Engine, sql: &str) -> String {
+    with_rules(e, sql, vec![Box::new(rules::PredicateSimplification)])
+}
+
+#[test]
+fn a_weaker_bound_is_dropped() {
+    let e = engine();
+    for (sql, want) in [
+        ("SELECT name FROM people WHERE age > 50 AND age > 30", "age > 50"),
+        ("SELECT name FROM people WHERE age > 30 AND age > 50", "age > 50"),
+        ("SELECT name FROM people WHERE age < 30 AND age < 50", "age < 30"),
+        // `>` is tighter than `>=` at the same value: it admits strictly less.
+        ("SELECT name FROM people WHERE age > 40 AND age >= 40", "age > 40"),
+        ("SELECT name FROM people WHERE age <= 40 AND age < 40", "age < 40"),
+    ] {
+        let plan = simplify(&e, sql);
+        let filter = plan
+            .lines()
+            .find(|l| l.contains("Filter"))
+            .unwrap_or_else(|| panic!("no filter in\n{plan}"));
+        assert!(filter.contains(want), "{sql}\nwanted `{want}` in: {filter}");
+        assert!(!filter.contains("AND"), "{sql}: both bounds survived: {filter}");
+    }
+}
+
+#[test]
+fn each_column_keeps_its_own_tightest_pair() {
+    let e = engine();
+    let plan = simplify(
+        &e,
+        "SELECT name FROM people WHERE age > 30 AND age > 40 AND id < 9 AND id < 5",
+    );
+    let filter = plan.lines().find(|l| l.contains("Filter")).unwrap();
+    assert!(filter.contains("age") && filter.contains("40"), "{filter}");
+    assert!(filter.contains("id") && filter.contains("5"), "{filter}");
+    assert!(!filter.contains("30") && !filter.contains("9"), "{filter}");
+}
+
+#[test]
+fn an_empty_interval_becomes_false() {
+    let e = engine();
+    for sql in [
+        "SELECT name FROM people WHERE age > 50 AND age < 30",
+        "SELECT name FROM people WHERE age = 41 AND age > 50",
+        "SELECT name FROM people WHERE age > 40 AND age < 40",
+        // Exclusive at a shared endpoint is empty; inclusive is not.
+        "SELECT name FROM people WHERE age >= 40 AND age < 40",
+    ] {
+        let plan = simplify(&e, sql);
+        assert!(plan.contains("false"), "{sql} should be unsatisfiable:\n{plan}");
+    }
+
+    // The satisfiable twin must survive untouched.
+    let plan = simplify(&e, "SELECT name FROM people WHERE age >= 41 AND age <= 41");
+    assert!(!plan.contains("false"), "41 satisfies both bounds:\n{plan}");
+}
+
+#[test]
+fn a_conjunct_that_constrains_nothing_is_kept() {
+    // `<>` is a comparison and bounds no interval. Dropping it because it was
+    // "recognised" is the bug the corpus caught.
+    let e = engine();
+    let plan = simplify(
+        &e,
+        "SELECT name FROM people WHERE age > 30 AND name <> 'Ada' AND age > 40",
+    );
+    let filter = plan.lines().find(|l| l.contains("Filter")).unwrap();
+    assert!(filter.contains("Ada"), "the <> test was dropped: {filter}");
+    assert!(filter.contains("40") && !filter.contains("30"), "{filter}");
+}
+
+#[test]
+fn an_or_is_left_alone() {
+    // Only top-level conjuncts are reasoned about; nothing inside a disjunction
+    // is touched, contradictory or not.
+    let e = engine();
+    let plan = simplify(
+        &e,
+        "SELECT name FROM people WHERE (age > 50 AND age < 30) OR city = 'London'",
+    );
+    assert!(!plan.contains("false"), "{plan}");
+}
+
+// ---------------------------------------------------------------------------
+// Outer join demotion
+// ---------------------------------------------------------------------------
+
+fn demote(e: &Engine, sql: &str) -> String {
+    with_rules(e, sql, vec![Box::new(rules::OuterToInner)])
+}
+
+#[test]
+fn an_outer_join_becomes_inner_when_its_padding_is_rejected() {
+    let e = engine();
+    for (sql, want) in [
+        (
+            "SELECT p.name FROM people p LEFT JOIN orders o ON p.id = o.person_id WHERE o.qty > 1",
+            "Join INNER",
+        ),
+        (
+            "SELECT p.name FROM orders o RIGHT JOIN people p ON p.id = o.person_id WHERE o.qty > 1",
+            "Join INNER",
+        ),
+        (
+            "SELECT p.name FROM people p FULL JOIN orders o ON p.id = o.person_id \
+             WHERE o.qty > 1 AND p.age > 20",
+            "Join INNER",
+        ),
+        // Rejecting only the right side's padding kills the unmatched *left*
+        // rows, so what survives is a RIGHT join. Getting this backwards is
+        // what the fuzz corpus caught.
+        (
+            "SELECT p.name FROM people p FULL JOIN orders o ON p.id = o.person_id WHERE o.qty > 1",
+            "Join RIGHT",
+        ),
+        (
+            "SELECT p.name FROM people p FULL JOIN orders o ON p.id = o.person_id WHERE p.age > 20",
+            "Join LEFT",
+        ),
+    ] {
+        let plan = demote(&e, sql);
+        assert!(plan.contains(want), "{sql}\nwanted {want} in:\n{plan}");
+    }
+}
+
+#[test]
+fn the_anti_join_idiom_keeps_its_outer_join() {
+    // `IS NULL` on the null-supplying side is how an anti-join is written.
+    // Demoting it would return nothing at all.
+    let e = engine();
+    for sql in [
+        "SELECT p.name FROM people p LEFT JOIN orders o ON p.id = o.person_id WHERE o.product IS NULL",
+        // A disjunction can be TRUE on a padded row.
+        "SELECT p.name FROM people p LEFT JOIN orders o ON p.id = o.person_id \
+         WHERE o.qty > 1 OR p.age > 20",
+        // A predicate only on the preserved side says nothing about padding.
+        "SELECT p.name FROM people p LEFT JOIN orders o ON p.id = o.person_id WHERE p.age > 20",
+    ] {
+        let plan = demote(&e, sql);
+        assert!(plan.contains("Join LEFT"), "{sql}\nwas demoted:\n{plan}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Common subexpression elimination
+// ---------------------------------------------------------------------------
+
+fn cse(e: &Engine, sql: &str) -> String {
+    with_rules(e, sql, vec![Box::new(rules::CommonSubexpression)])
+}
+
+/// The *lower* projection -- the one this rule inserts to compute the shared
+/// expressions. Assertions have to look here rather than at the whole plan:
+/// every rendered projection repeats its expressions in the `AS` aliases, so
+/// counting operators across the text counts the names too.
+fn hoisted_line(plan: &str) -> String {
+    plan.lines()
+        .rfind(|l| l.contains("Project"))
+        .unwrap_or_else(|| panic!("no projection in\n{plan}"))
+        .to_string()
+}
+
+#[test]
+fn a_repeated_subexpression_is_computed_once() {
+    let e = engine();
+    let plan = cse(&e, "SELECT (age + id), (age + id) * 2 FROM people");
+    // One projection below computing it, one above reading it twice.
+    assert_eq!(plan.matches("Project").count(), 2, "{plan}");
+    // Defined once below, read twice above.
+    assert_eq!(plan.matches("cse_0").count(), 3, "{plan}");
+    // And the addition itself is evaluated in exactly one place.
+    let hoisted = hoisted_line(&plan);
+    assert_eq!(hoisted.matches(" + ").count(), 1, "{plan}");
+}
+
+#[test]
+fn a_subexpression_appearing_once_is_left_alone() {
+    let e = engine();
+    for sql in [
+        "SELECT (age + id), (age * id) FROM people",
+        "SELECT age, id FROM people",
+        // Too small to be worth a column of its own.
+        "SELECT -age, -age FROM people",
+    ] {
+        let plan = cse(&e, sql);
+        assert_eq!(plan.matches("Project").count(), 1, "{sql}\n{plan}");
+    }
+}
+
+#[test]
+fn a_guarded_division_is_not_lifted_out_of_its_case() {
+    // Hoisting the division would evaluate it for every row, including the
+    // ones the guard exists to protect.
+    let e = engine();
+    let plan = cse(
+        &e,
+        "SELECT CASE WHEN age > 0 THEN id / age ELSE 0 END, \
+                CASE WHEN age > 0 THEN id / age ELSE 1 END FROM people",
+    );
+    assert_eq!(plan.matches("Project").count(), 1, "hoisted out of a CASE:\n{plan}");
+}
+
+#[test]
+fn nothing_is_lifted_out_of_the_right_side_of_an_and() {
+    // `AND` evaluates its right operand only over the rows the left one left
+    // undecided, so that side is lazy for the same reason a CASE branch is.
+    let e = engine();
+    // Two conjunctions that share only the guarded division. It sits on the
+    // right of an AND in both, so it must not become a column of its own --
+    // that would evaluate it for every row, including the ones the guard
+    // exists to protect.
+    let plan = cse(
+        &e,
+        "SELECT (age > 0 AND id / age > 1), (age > 0 AND id / age > 2) FROM people",
+    );
+    let hoisted = hoisted_line(&plan);
+    assert!(
+        !hoisted.contains('/'),
+        "the division was lifted out of its guard:\n{plan}"
+    );
+
+    // Hoisting the *whole* conjunction is a different matter and is fine: the
+    // short-circuit travels inside it.
+    let plan = cse(
+        &e,
+        "SELECT (age > 0 AND id / age > 1), (age > 0 AND id / age > 1) FROM people",
+    );
+    let hoisted = hoisted_line(&plan);
+    assert_eq!(hoisted.matches("cse_").count(), 1, "{plan}");
+    assert!(
+        hoisted.contains("AND"),
+        "the division was separated from its guard:\n{plan}"
+    );
+
+    // The left operand is evaluated eagerly, so hoisting it is correct and
+    // this is not a case of the rule being too timid.
+    let plan = cse(
+        &e,
+        "SELECT (age > 0 AND id > 1), (age > 0 AND id > 2) FROM people",
+    );
+    assert!(plan.contains("cse_"), "the eager operand should hoist:\n{plan}");
+}

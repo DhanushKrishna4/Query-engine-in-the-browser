@@ -1637,9 +1637,8 @@ group and got compacted every time. That alone cost 2x.
   changes.
 - **No multi-column statistics.** Correlated predicates are the largest source
   of estimation error and nothing here addresses them.
-- **Two rules still missing.** Common subexpression elimination and aggregate
-  pushdown through joins. The driver and the trace are built for them; each is
-  a new file in `optimizer/rules/`.
+- **One rule still missing.** Aggregate pushdown through joins. The driver and
+  the trace are built for it; it is a new file in `optimizer/rules/`.
 - **Correlated subqueries only in WHERE.** A correlated subquery in a
   projection, under an `OR`, or over a plan with `GROUP BY` or `LIMIT` is
   rejected at plan time rather than executed per row. Supporting those needs
@@ -1703,7 +1702,7 @@ group and got compacted every time. That alone cost 2x.
 
 ## Testing
 
-`cargo test` -- 308 tests plus a 1,029-record sqllogictest corpus, every query of
+`cargo test` -- 319 tests plus a 1,037-record sqllogictest corpus, every query of
 which is additionally run seven ways and compared, run a second time against
 Parquet-backed tables, and scored for estimation accuracy.
 

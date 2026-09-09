@@ -187,6 +187,7 @@ impl Optimizer {
         rules.push(Box::new(rules::PredicatePushdown));
         rules.push(Box::new(rules::LimitPushdown));
         rules.push(Box::new(rules::JoinReorder));
+        rules.push(Box::new(rules::CommonSubexpression));
         rules.push(Box::new(rules::ProjectionPushdown));
         Optimizer { rules }
     }
