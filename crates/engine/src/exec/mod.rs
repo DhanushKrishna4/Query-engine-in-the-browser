@@ -27,6 +27,8 @@
 pub mod aggregate;
 pub mod index;
 pub mod join;
+pub mod merge;
+pub mod ordering;
 pub mod key;
 pub mod prune;
 pub mod setop;
@@ -223,14 +225,38 @@ pub enum Evaluator {
 /// Which join implementation the planner is allowed to pick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JoinAlgorithm {
-    /// Hash join when the condition offers an equality between the two sides,
+    /// Merge join when both inputs already arrive sorted on the join keys,
+    /// hash join when the condition offers an equality between the two sides,
     /// nested loop otherwise.
     Auto,
+    /// Sort both inputs and merge them, whatever their ordering.
+    ///
+    /// A real strategy -- sort-merge join is what an optimizer picks when the
+    /// output ordering is worth the sorts -- and the only way to exercise the
+    /// merge join over a corpus where almost nothing arrives sorted. Falls back
+    /// to a nested loop when the condition yields no equality, since there is
+    /// then nothing to sort on.
+    ForceMergeJoin,
     /// Always nested loop. The point is testing: the nested loop compares every
     /// pair against the whole condition, so it is the obvious implementation
     /// that the hash join has to agree with -- the same relationship the scalar
     /// evaluator has with the vectorized one.
     ForceNestedLoop,
+}
+
+/// How to aggregate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggregateAlgorithm {
+    /// Stream the aggregate when the input already arrives sorted on the group
+    /// keys, and build a hash table otherwise.
+    Auto,
+    /// Sort the input on the group keys and stream it, whatever its ordering.
+    ///
+    /// The streaming aggregate holds one accumulator set rather than one per
+    /// group, so this is the memory-bounded plan an optimizer reaches for when
+    /// the group count is large -- and the way to check that it agrees with the
+    /// hash aggregate on every query in the corpus.
+    ForceSorted,
 }
 
 #[derive(Debug, Clone)]
@@ -253,6 +279,8 @@ pub struct ExecOptions {
     /// alternative at all for a correlated one -- so a correlated query simply
     /// fails to plan. That asymmetry is the point of measuring it.
     pub decorrelate: bool,
+    /// How aggregation is performed.
+    pub aggregate_algorithm: AggregateAlgorithm,
     /// Whether scans consult row-group zone maps to skip groups.
     pub zone_map_pruning: bool,
     /// Whether scans consult per-row-group bloom filters for equality.
@@ -271,6 +299,7 @@ impl Default for ExecOptions {
         ExecOptions {
             evaluator: Evaluator::Vectorized,
             join_algorithm: JoinAlgorithm::Auto,
+            aggregate_algorithm: AggregateAlgorithm::Auto,
             optimize: true,
             reorder_joins: true,
             top_n: true,
@@ -316,6 +345,22 @@ impl ExecOptions {
     pub fn nested_loop_joins() -> ExecOptions {
         ExecOptions {
             join_algorithm: JoinAlgorithm::ForceNestedLoop,
+            ..Default::default()
+        }
+    }
+
+    /// Sort both inputs of every equi-join and merge them.
+    pub fn merge_joins() -> ExecOptions {
+        ExecOptions {
+            join_algorithm: JoinAlgorithm::ForceMergeJoin,
+            ..Default::default()
+        }
+    }
+
+    /// Sort the input of every aggregate and stream it.
+    pub fn sorted_aggregates() -> ExecOptions {
+        ExecOptions {
+            aggregate_algorithm: AggregateAlgorithm::ForceSorted,
             ..Default::default()
         }
     }
@@ -1260,12 +1305,46 @@ fn build_node(
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
-            Box::new(HashAggregateExec::new(
-                build_node(input, catalog, options, estimates)?,
-                compiled_groups,
-                compiled_aggs,
-                Arc::clone(schema),
-            ))
+            let child = build_node(input, catalog, options, estimates)?;
+
+            // The other operator choice this step added. A streaming aggregate
+            // needs its input grouped together, which sorted input gives it;
+            // forcing it sorts, and otherwise the ordering has to be there
+            // already. Handed unsorted input it would emit one group per run
+            // rather than fail, so nothing may construct it without this check.
+            let forced = options.aggregate_algorithm == AggregateAlgorithm::ForceSorted;
+            // With no GROUP BY there is exactly one group, so the requirement
+            // is empty and anything satisfies it -- an ungrouped aggregate
+            // always streams. That is the right answer rather than an accident:
+            // the hash implementation would build a one-entry table and hash an
+            // empty key once per row for nothing.
+            let sorted = group_exprs
+                .iter()
+                .map(ordering::column_of)
+                .collect::<Option<Vec<_>>>()
+                .is_some_and(|cols| ordering::satisfies(&ordering::orderings(input), &cols));
+
+            if forced || sorted {
+                // With no GROUP BY there is one group and nothing to sort by.
+                let child = if forced && !compiled_groups.is_empty() {
+                    sorted_on(child, &compiled_groups)
+                } else {
+                    child
+                };
+                Box::new(aggregate::SortAggregateExec::new(
+                    child,
+                    compiled_groups,
+                    compiled_aggs,
+                    Arc::clone(schema),
+                ))
+            } else {
+                Box::new(HashAggregateExec::new(
+                    child,
+                    compiled_groups,
+                    compiled_aggs,
+                    Arc::clone(schema),
+                ))
+            }
         }
     })
 }
@@ -1277,11 +1356,15 @@ fn build_node(
 /// condition yields at least one equality between the two sides, it is used;
 /// otherwise the only thing left is to compare every pair.
 ///
+/// The third choice is a merge join, and it is the one with a precondition:
+/// both inputs must already be sorted on the join keys, in the same direction.
+/// `exec::ordering` is what can answer that, and until it existed this choice
+/// could not be made at all. When it holds, a merge join walks both inputs once
+/// with no hash table and hands its output onward still sorted.
+///
 /// What is *not* decided here is which side to build. You want the smaller one,
 /// and knowing which that is takes cardinality estimates, so for now the right
-/// input is always built. A merge join -- the third choice, for inputs that
-/// arrive sorted -- has no way to exist until there is a Sort operator to
-/// produce sorted inputs or a plan property to notice they already are.
+/// input is always built.
 #[allow(clippy::too_many_arguments)]
 fn build_join(
     join_type: JoinType,
@@ -1303,7 +1386,9 @@ fn build_join(
         // Forcing a nested loop means handing it the whole condition rather
         // than splitting anything out as a hash key.
         (Some(c), JoinAlgorithm::ForceNestedLoop) => (Vec::new(), Some(c.clone())),
-        (Some(c), JoinAlgorithm::Auto) => split_join_condition(c.clone(), &left_rels, &right_rels),
+        (Some(c), JoinAlgorithm::Auto | JoinAlgorithm::ForceMergeJoin) => {
+            split_join_condition(c.clone(), &left_rels, &right_rels)
+        }
         (None, _) => (Vec::new(), None),
     };
 
@@ -1340,6 +1425,30 @@ fn build_join(
         build_keys.push(expr::compile(r, &right_ctx)?);
     }
 
+    // A merge join, if the inputs can supply the ordering it needs. Forcing it
+    // sorts them; otherwise they have to arrive sorted already.
+    let forced = options.join_algorithm == JoinAlgorithm::ForceMergeJoin;
+    if forced || merge_join_applies(&equi, left, right) {
+        let (left_op, right_op) = if forced {
+            (
+                sorted_on(left_op, &probe_keys),
+                sorted_on(right_op, &build_keys),
+            )
+        } else {
+            (left_op, right_op)
+        };
+        return Ok(Box::new(merge::MergeJoinExec::new(
+            left_op,
+            right_op,
+            join_type,
+            probe_keys,
+            build_keys,
+            residual,
+            Arc::clone(schema),
+            candidate_schema,
+        )));
+    }
+
     Ok(Box::new(HashJoinExec::new(
         left_op,
         right_op,
@@ -1350,6 +1459,53 @@ fn build_join(
         Arc::clone(schema),
         candidate_schema,
     )))
+}
+
+/// Whether both inputs already arrive sorted on the join keys, in agreement.
+///
+/// Every part has to hold: the keys must be bare columns (the only expressions
+/// the ordering property will vouch for), each side must be sorted on its own
+/// keys in that order, and the two sides must sort the same way. A merge join
+/// over inputs that disagree on direction or NULL placement walks past rows it
+/// will never revisit, and the rows it loses do not announce themselves.
+fn merge_join_applies(
+    equi: &[(crate::plan::BoundExpr, crate::plan::BoundExpr)],
+    left: &LogicalPlan,
+    right: &LogicalPlan,
+) -> bool {
+    let Some(left_cols): Option<Vec<_>> =
+        equi.iter().map(|(l, _)| ordering::column_of(l)).collect()
+    else {
+        return false;
+    };
+    let Some(right_cols): Option<Vec<_>> =
+        equi.iter().map(|(_, r)| ordering::column_of(r)).collect()
+    else {
+        return false;
+    };
+    let left_order = ordering::orderings(left);
+    let right_order = ordering::orderings(right);
+    ordering::satisfies(&left_order, &left_cols)
+        && ordering::satisfies(&right_order, &right_cols)
+        && ordering::directions_match(&left_order, &right_order, left_cols.len())
+}
+
+/// Wrap an operator in a sort on the given keys, ascending with NULLs first.
+///
+/// The direction is arbitrary but must be the *same* arbitrary choice on both
+/// sides of a merge join, and it matches how `MergeJoinExec::compare` orders
+/// NULLs.
+fn sorted_on(op: Box<dyn Operator>, keys: &[CompiledExpr]) -> Box<dyn Operator> {
+    let schema = op.schema();
+    let sort_keys = keys
+        .iter()
+        .map(|e| CompiledSortKey {
+            expr: e.clone(),
+            ascending: true,
+            nulls_first: true,
+        })
+        .collect();
+    Box::new(SortExec::new(op, sort_keys, schema))
 }
 
 fn relations_of(ctx: &EvalContext) -> BTreeSet<RelId> {

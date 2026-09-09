@@ -111,13 +111,15 @@ fn main() -> ExitCode {
                         || v == "no-index"
                         || v == "no-reorder"
                         || v == "no-decorrelation"
-                        || v == "no-top-n" =>
+                        || v == "no-top-n"
+                        || v == "merge-join"
+                        || v == "stream-aggregate" =>
                 {
                     bench_baseline = v
                 }
                 _ => {
                     eprintln!(
-                        "--bench-baseline must be one of: scalar, nested-loop, unoptimized, no-pruning, no-bloom, no-index, no-reorder, no-decorrelation, no-top-n"
+                        "--bench-baseline must be one of: scalar, nested-loop, merge-join, stream-aggregate, unoptimized, no-pruning, no-bloom, no-index, no-reorder, no-decorrelation, no-top-n"
                     );
                     return ExitCode::FAILURE;
                 }
@@ -185,8 +187,9 @@ options:
   --bench file.sql       time each statement under both evaluators
   --bench-runs N         repetitions per query (default 5)
   --bench-baseline B     compare against `scalar` (default), `nested-loop`,
-                         `unoptimized`, `no-pruning`, `no-bloom`, `no-index`,
-                         `no-reorder`, `no-decorrelation` or `no-top-n`
+                         `merge-join`, `stream-aggregate`, `unoptimized`,
+                         `no-pruning`, `no-bloom`, `no-index`, `no-reorder`,
+                         `no-decorrelation` or `no-top-n`
   --index table.column   build a B+ tree index before running
   --compact-threshold F  filter compaction threshold, 0 disables (default 0.2)
   -h, --help             show this message";
@@ -743,6 +746,8 @@ fn run_benchmark(
         "no-pruning" => ExecOptions::without_pruning(),
         "no-bloom" => ExecOptions::without_bloom_filters(),
         "no-index" => ExecOptions::without_index_scans(),
+        "merge-join" => ExecOptions::merge_joins(),
+        "stream-aggregate" => ExecOptions::sorted_aggregates(),
         "no-reorder" => ExecOptions::without_join_reorder(),
         "no-decorrelation" => ExecOptions::without_decorrelation(),
         "no-top-n" => ExecOptions::without_top_n(),

@@ -354,3 +354,201 @@ impl Operator for HashAggregateExec {
         vec![self.input.as_ref()]
     }
 }
+
+// ---------------------------------------------------------------------------
+// Sort-based aggregation
+// ---------------------------------------------------------------------------
+
+/// Aggregation over an input whose groups already arrive together.
+///
+/// Named for what it does rather than for what it needs: it streams. Sorted
+/// input is the usual way its groups arrive contiguously, but an aggregate with
+/// no GROUP BY has a single group and needs no ordering at all -- and that case
+/// is better served here than by a hash table of one entry.
+///
+/// The other half of the aggregate choice. A hash aggregate holds one
+/// accumulator set per distinct group for the whole query; a streaming one
+/// holds exactly one, because sorted input puts every group's rows together and
+/// a group is finished the moment the key changes. Memory goes from
+/// O(distinct groups) to O(1).
+///
+/// It also emits in group-key order, which a hash aggregate cannot promise --
+/// so an `ORDER BY` on the grouping columns above it is free.
+///
+/// The precondition is the input's ordering, which `exec::ordering` establishes
+/// and the planner checks. Given unsorted input this operator does not fail; it
+/// silently produces one group per *run*, which is why nothing may construct it
+/// without that check.
+pub struct SortAggregateExec {
+    input: Box<dyn Operator>,
+    group_exprs: Vec<CompiledExpr>,
+    aggregates: Vec<CompiledAggregate>,
+    schema: Arc<Schema>,
+    /// The group being accumulated: its key values and its accumulators.
+    open: Option<(Vec<ScalarValue>, Vec<Accumulator>)>,
+    /// Groups finished but not yet handed upward.
+    ready: Vec<(Vec<ScalarValue>, Vec<Accumulator>)>,
+    finished: bool,
+    stats: OperatorStats,
+}
+
+impl SortAggregateExec {
+    pub fn new(
+        input: Box<dyn Operator>,
+        group_exprs: Vec<CompiledExpr>,
+        aggregates: Vec<CompiledAggregate>,
+        schema: Arc<Schema>,
+    ) -> SortAggregateExec {
+        let detail = if group_exprs.is_empty() {
+            "streaming aggregate, no grouping".to_string()
+        } else {
+            format!(
+                "streaming aggregate on {} sorted key(s), {} aggregate(s)",
+                group_exprs.len(),
+                aggregates.len()
+            )
+        };
+        SortAggregateExec {
+            input,
+            group_exprs,
+            aggregates,
+            schema,
+            open: None,
+            ready: Vec::new(),
+            finished: false,
+            stats: OperatorStats::new("StreamAggregate", detail),
+        }
+    }
+
+    fn new_accumulators(&self) -> Vec<Accumulator> {
+        self.aggregates.iter().map(Accumulator::new).collect()
+    }
+
+    /// Consume input until `target` groups are complete, or the input ends.
+    ///
+    /// Bounded by a count rather than by "at least one" so the caller can loop
+    /// on the same condition: a `while ready.len() < N` outside and a
+    /// `while ready.is_empty()` inside make no progress once one group is
+    /// ready, and spin.
+    fn fill(&mut self, target: usize) -> Result<()> {
+        while self.ready.len() < target && !self.finished {
+            let Some(batch) = self.input.next()? else {
+                self.finished = true;
+                // A query with no GROUP BY produces exactly one row even over
+                // empty input -- COUNT returns 0 and SUM returns NULL. With a
+                // GROUP BY, no rows means no groups.
+                if let Some(group) = self.open.take() {
+                    self.ready.push(group);
+                } else if self.group_exprs.is_empty() {
+                    self.ready.push((Vec::new(), self.new_accumulators()));
+                }
+                break;
+            };
+
+            let timer = Timer::start();
+            self.stats.rows_in += batch.num_rows() as u64;
+
+            let key_cols: Vec<Arc<Column>> = self
+                .group_exprs
+                .iter()
+                .map(|e| expr::eval(e, &batch))
+                .collect::<Result<_>>()?;
+            let arg_cols: Vec<Option<Arc<Column>>> = self
+                .aggregates
+                .iter()
+                .map(|a| a.arg.as_ref().map(|e| expr::eval(e, &batch)).transpose())
+                .collect::<Result<_>>()?;
+
+            for row in 0..batch.num_rows() {
+                let values: Vec<ScalarValue> = key_cols.iter().map(|c| c.value(row)).collect();
+                // NULL groups with NULL here, exactly as in the hash aggregate:
+                // grouping treats NULLs as equal even though comparison does
+                // not. The sort puts them together, so the run is contiguous.
+                let same = match &self.open {
+                    Some((key, _)) => keys_equal(key, &values),
+                    None => false,
+                };
+                if !same {
+                    if let Some(group) = self.open.take() {
+                        self.ready.push(group);
+                    }
+                    self.open = Some((values, self.new_accumulators()));
+                }
+                let (_, accs) = self.open.as_mut().expect("a group is open");
+                for (a, col) in accs.iter_mut().zip(&arg_cols) {
+                    let value = col.as_ref().map(|c| c.value(row));
+                    a.update(value.as_ref())?;
+                }
+            }
+            self.stats.elapsed_nanos += timer.elapsed_nanos();
+        }
+        Ok(())
+    }
+}
+
+/// Group-key equality: NULL equals NULL, which is what grouping means and what
+/// comparison does not.
+fn keys_equal(a: &[ScalarValue], b: &[ScalarValue]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(x, y)| KeyValue::of(x) == KeyValue::of(y))
+}
+
+impl Operator for SortAggregateExec {
+    fn set_estimated_rows(&mut self, rows: f64) {
+        self.stats.estimated_rows = Some(rows);
+    }
+
+    fn child_mut(&mut self, index: usize) -> Option<&mut dyn Operator> {
+        match index {
+            0 => Some(self.input.as_mut()),
+            _ => None,
+        }
+    }
+
+    fn schema(&self) -> Arc<Schema> {
+        Arc::clone(&self.schema)
+    }
+
+    fn next(&mut self) -> Result<Option<Batch>> {
+        self.fill(DEFAULT_BATCH_SIZE)?;
+        if self.ready.is_empty() {
+            return Ok(None);
+        }
+
+        let timer = Timer::start();
+        let take = self.ready.len().min(DEFAULT_BATCH_SIZE);
+        let groups: Vec<(Vec<ScalarValue>, Vec<Accumulator>)> =
+            self.ready.drain(..take).collect();
+
+        let mut columns: Vec<Column> = Vec::with_capacity(self.schema.len());
+        for g in 0..self.group_exprs.len() {
+            let mut b = ColumnBuilder::new(&self.schema.field(g).data_type);
+            for (key, _) in &groups {
+                b.append(&key[g])?;
+            }
+            columns.push(b.finish());
+        }
+        for (a, agg) in self.aggregates.iter().enumerate() {
+            let mut b = ColumnBuilder::new(&agg.data_type);
+            for (_, accs) in &groups {
+                b.append(&accs[a].finish(agg.data_type))?;
+            }
+            columns.push(b.finish());
+        }
+
+        let out = Batch::dense(Arc::clone(&self.schema), columns);
+        self.stats.elapsed_nanos += timer.elapsed_nanos();
+        self.stats.record_output(&out);
+        Ok(Some(out))
+    }
+
+    fn stats(&self) -> &OperatorStats {
+        &self.stats
+    }
+
+    fn children(&self) -> Vec<&dyn Operator> {
+        vec![self.input.as_ref()]
+    }
+}

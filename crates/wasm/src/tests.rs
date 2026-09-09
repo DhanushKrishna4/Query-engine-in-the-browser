@@ -186,7 +186,8 @@ fn the_metadata_carries_the_schema_and_the_operator_tree() {
     // The statistics tree is nested the way the operators are.
     assert_eq!(meta["stats"]["name"], "Project");
     let agg = &meta["stats"]["children"][0];
-    assert_eq!(agg["name"], "HashAggregate");
+    // An ungrouped aggregate streams: one group, so nothing to hash.
+    assert_eq!(agg["name"], "StreamAggregate");
     assert!(agg["children"][0]["name"].as_str().unwrap().contains("Filter"));
     // Estimates are reported next to reality, which is the whole point.
     assert!(agg["estimated_rows"].is_number());

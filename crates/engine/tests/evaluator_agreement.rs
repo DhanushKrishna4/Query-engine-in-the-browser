@@ -15,6 +15,12 @@
 //!
 //!   * joins forced onto the nested loop, which compares every pair against the
 //!     whole condition rather than hashing an equality out of it;
+//!   * joins forced onto a sort-merge, which walks both inputs once in key
+//!     order and never looks back -- a completely different way of finding the
+//!     same pairs, and the one that loses rows silently if it is wrong;
+//!   * aggregates forced onto the streaming implementation, which holds one
+//!     accumulator set instead of a hash table and depends entirely on its
+//!     input being sorted;
 //!   * the optimizer disabled, which is the definition of a rewrite being
 //!     semantics-preserving -- if any rule changes an answer, this fails;
 //!   * zone-map pruning disabled, since a scan that skips a row group must skip
@@ -72,16 +78,26 @@ fn execution_strategies_agree() {
     files.sort();
     assert!(!files.is_empty());
 
-    let configs = [
-        ("scalar evaluator", ExecOptions::scalar()),
-        ("nested loop joins", ExecOptions::nested_loop_joins()),
-        ("optimizer disabled", ExecOptions::unoptimized()),
-        ("zone maps disabled", ExecOptions::without_pruning()),
-        ("bloom filters disabled", ExecOptions::without_bloom_filters()),
-        ("index scans disabled", ExecOptions::without_index_scans()),
+    // The flag says whether a configuration may legally emit rows in a
+    // different order. Results are compared as multisets throughout, so order
+    // alone never matters -- but `LIMIT` without a total `ORDER BY` turns a
+    // reordering into a different *set* of rows, and SQL says both are right.
+    // A streaming aggregate emits groups in key order where a hash aggregate
+    // emits them in insertion order; `GROUP BY city LIMIT 3` over seven cities
+    // then returns a different three, and neither is wrong.
+    let configs: [(&str, ExecOptions, bool); 8] = [
+        ("scalar evaluator", ExecOptions::scalar(), false),
+        ("nested loop joins", ExecOptions::nested_loop_joins(), false),
+        ("sort-merge joins", ExecOptions::merge_joins(), true),
+        ("streaming aggregates", ExecOptions::sorted_aggregates(), true),
+        ("optimizer disabled", ExecOptions::unoptimized(), false),
+        ("zone maps disabled", ExecOptions::without_pruning(), false),
+        ("bloom filters disabled", ExecOptions::without_bloom_filters(), false),
+        ("index scans disabled", ExecOptions::without_index_scans(), false),
     ];
     let vectorized = ExecOptions::default();
     let mut compared = 0usize;
+    let mut skipped = 0usize;
     let mut mismatches = Vec::new();
 
     for path in files {
@@ -115,7 +131,14 @@ fn execution_strategies_agree() {
                     }
                     compared += 1;
 
-                    for (label, options) in &configs {
+                    for (label, options, reorders) in &configs {
+                        // Conservative: any LIMIT at all, not only one without
+                        // an ORDER BY, because `ORDER BY x LIMIT 3` with ties
+                        // in `x` is just as under-determined.
+                        if *reorders && sql.to_ascii_uppercase().contains("LIMIT") {
+                            skipped += 1;
+                            continue;
+                        }
                         let mut other = outcome(&engine, sql, options);
                         if let Ok(rows) = &mut other {
                             rows.sort();
@@ -145,7 +168,11 @@ fn execution_strategies_agree() {
         }
     }
 
-    println!("compared {compared} queries across {} configurations", configs.len() + 1);
+    println!(
+        "compared {compared} queries across {} configurations \
+         ({skipped} comparisons skipped: LIMIT under a row-reordering strategy)",
+        configs.len() + 1
+    );
     assert!(compared > 400, "corpus too small to be meaningful");
     assert!(
         mismatches.is_empty(),

@@ -13,9 +13,9 @@ No SQL parser crates, no DataFusion/Polars/DuckDB, no Arrow. The engine crate
 has **zero dependencies** and CI fails if it grows one.
 
 **Status: the twenty build-order steps are done**, with real exceptions rather
-than a clean sweep -- merge join was named in step 7 and never built, the
-storage layer has no compression encodings of its own, and CTEs are parsed only
-to be rejected by name. Those and twenty others are written down in
+than a clean sweep -- the storage layer has no compression encodings of its own,
+CTEs are parsed only to be rejected by name, and several rewrite rules the spec
+lists are missing. Those and twenty others are written down in
 [Deliberate gaps](#deliberate-gaps); nothing is claimed there that is not
 true here.
 
@@ -653,6 +653,118 @@ looks at.
 pyarrow generates the fixtures and is the oracle here, exactly as SQLite is the
 oracle for SQL semantics: a mature independent implementation, used as a tool
 rather than as a dependency. Nothing in `crates/` knows it exists.
+
+## Merge join, and the aggregate that streams
+
+Step 7 of the build order reads *"joins: hash join, then nested loop **and
+merge**"*. The merge join was skipped and stayed skipped, along with the
+sort-based aggregate the operator list also names -- because neither can be
+*chosen* without a way to answer "is this input already sorted, and by what?".
+
+`exec::ordering` answers it. An ordering survives a Filter and a Limit, is
+remapped through a Project, is renumbered through a SubqueryAlias, and comes
+from exactly one place: an explicit `Sort`. Nothing else claims one. The module
+is conservative on purpose -- only bare column references count as sort keys,
+because claiming an ordering that does not hold is not a slow plan, it is a
+merge join walking past rows it will never look at again.
+
+### What each operator is for
+
+A **merge join** walks both inputs once in key order and never looks back. Its
+memory is one *run* -- the rows sharing a key -- rather than a whole build side,
+and its output arrives sorted, which can make an `ORDER BY` above it free.
+
+A **streaming aggregate** holds one accumulator set instead of one per group,
+because sorted input puts every group's rows together and a group is finished
+the moment the key changes. Over the taxi fixture's 198,612 medallions that is
+one accumulator set against 198,612.
+
+Both are chosen automatically when the ordering is already there:
+
+```text
+qe> SELECT COUNT(*) FROM (SELECT trip_id, fare FROM trips ORDER BY trip_id) a
+      JOIN (SELECT trip_id, vendor FROM trips ORDER BY trip_id) b ON a.trip_id = b.trip_id;
+
+StreamAggregate  rows=1
+  -> MergeJoin   rows=1000000
+    -> Sort      rows=1000000
+    -> Sort      rows=1000000
+```
+
+Sort the two sides differently and the plan goes back to a hash join, because
+two inputs sorted opposite ways are not merge-joinable however sorted they are.
+
+### And they usually lose
+
+The honest measurement. `--bench-baseline merge-join` and `stream-aggregate`
+*force* the alternative, which means paying for the sorts -- and that is the
+real comparison, because almost nothing in a plan arrives sorted on its own:
+
+| | hash | sort-merge | |
+| --- | ---: | ---: | ---: |
+| `trips JOIN boroughs`, five-row dimension | 124 ms | 366 ms | **0.34x** |
+| the same, feeding a `GROUP BY` | 231 ms | 490 ms | 0.47x |
+| `LEFT JOIN` to the same dimension | 124 ms | 363 ms | 0.34x |
+
+| | hash | streaming | |
+| --- | ---: | ---: | ---: |
+| `GROUP BY vendor` (3 groups) | 119 ms | 254 ms | **0.47x** |
+| `GROUP BY borough, vendor` (15) | 211 ms | 566 ms | 0.37x |
+| `GROUP BY pickup_date` (336) | 63 ms | 88 ms | 0.71x |
+| `GROUP BY medallion` (198,612) | 265 ms | 491 ms | 0.54x |
+
+Hash wins every one, by 1.7x across the join set and 1.8x across the aggregate
+set. That is the correct result and worth stating plainly: sorting a million
+rows to meet a five-row dimension table is a bad trade, and a hash table over
+198,612 groups is still cheaper than sorting a million rows to avoid it.
+
+What the streaming aggregate buys is not time but **memory**, and the benchmark
+cannot show that. What the merge join buys is an ordered output, which the plan
+above spends on nothing. Both become the right choice when the sort is already
+paid for by something else -- which is exactly when the planner picks them, and
+never otherwise.
+
+Note the third aggregate row: at 336 groups the gap narrows to 0.71x, and it is
+the only one where the sort is nearly worth it. The curve is going the right
+way; the fixture just never has enough groups relative to rows.
+
+### One consequence worth naming
+
+An aggregate with no `GROUP BY` has one group, so the ordering requirement is
+empty and *everything* satisfies it -- every ungrouped aggregate now streams.
+That is an improvement rather than an accident: the hash implementation was
+building a one-entry table and hashing an empty key once per row. The operator
+is called `StreamAggregate` rather than `SortAggregate` for that reason; sorted
+input is how its groups usually arrive contiguously, not what it requires.
+
+### Two bugs, one of them silent
+
+**A run of equal keys lost every duplicate after the first.** Loading the
+right's run advances the right cursor past it, so a second left row with the
+same key compared against whatever came *next* and was declared unmatched.
+Three left rows against two right rows returned two pairs instead of six. The
+fix is to check the buffered run before the cursor; the test that pins it is
+`a_run_of_equal_keys_pairs_with_every_row_of_the_other_run`.
+
+**Both new operators spun forever.** `next` looped while the buffer held fewer
+than a full batch; the fill routine looped while the buffer was *empty*. Once
+one row was buffered neither made progress, and the agreement test ran for ten
+minutes before I killed it. Both now take the target count as an argument, so
+the two loops share one condition.
+
+### Checked against the implementations they replace
+
+`tests/evaluator_agreement.rs` now runs the corpus **nine** ways. Forcing
+sort-merge joins and forcing streaming aggregates each run all 938 queries
+through a completely different operator and demand the same rows -- every join
+type, every NULL case, every outer join.
+
+38 comparisons are skipped, and the reason is worth recording: `LIMIT` without a
+total `ORDER BY` has no unique answer. `GROUP BY city LIMIT 3` over seven cities
+returns whichever three come first, and a streaming aggregate emits in key order
+where a hash aggregate emits in insertion order. Both are correct SQL. The skip
+is conservative -- any `LIMIT` at all under a reordering strategy, since
+`ORDER BY x LIMIT 3` with ties in `x` is just as under-determined.
 
 ## In the browser
 
@@ -1503,10 +1615,9 @@ group and got compacted every time. That alone cost 2x.
 
 ## Deliberate gaps
 
-- **No merge join, and no sort-based aggregate.** Sort now exists, so both are
-  buildable -- but neither is *selectable* without a plan property tracking
-  which orderings a subtree already produces, which is the actual missing piece.
-  A sort-based aggregate is also what would give the hash aggregate an oracle.
+- **Nothing records that a table arrived sorted.** The ordering property tracks
+  what a `Sort` produces, but a scan never claims one -- so a merge join over a
+  clustered column, which should need no sort at all, is not recognised.
 - **No window function in an aggregate query.** A window runs after aggregation,
   so its arguments would have to resolve against the aggregate's output; getting
   that wrong gives a wrong answer rather than an error, so it is refused by name.
@@ -1580,7 +1691,7 @@ group and got compacted every time. That alone cost 2x.
 
 ## Testing
 
-`cargo test` -- 299 tests plus a 974-record sqllogictest corpus, every query of
+`cargo test` -- 308 tests plus a 974-record sqllogictest corpus, every query of
 which is additionally run seven ways and compared, run a second time against
 Parquet-backed tables, and scored for estimation accuracy.
 
@@ -1752,8 +1863,5 @@ shortest list of things that would matter most next:
   keys all build a tuple of `ScalarValue`s and allocate a `String` per text
   column. It is the same trap three operators fell into in turn, and it is the
   clearest remaining performance work.
-- **A merge join and a sort-based aggregate.** Both are buildable now that Sort
-  exists; what is missing is a plan property tracking which orderings a subtree
-  already produces, so the planner can tell when a sort is free.
 - **Parquet's own bloom filters**, so a lazily loaded column can be pruned on
   equality without reading the data that pruning exists to avoid.

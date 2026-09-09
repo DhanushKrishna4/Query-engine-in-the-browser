@@ -1478,3 +1478,233 @@ fn the_format_is_chosen_by_the_bytes_not_the_name() {
         .unwrap();
     assert!(!e.catalog().get("c", false).unwrap().is_pending());
 }
+
+// ---------------------------------------------------------------------------
+// Merge join and the streaming aggregate
+// ---------------------------------------------------------------------------
+
+use crate::exec::ExecOptions;
+
+/// Two tables with duplicate and NULL join keys, which is where a merge join
+/// is easy to get wrong.
+fn merge_engine() -> Engine {
+    let mut e = Engine::new();
+    // Keys 1,1,1,2,4,NULL on the left; 1,1,3,4,NULL on the right.
+    e.load_csv(
+        "l",
+        b"k,tag\n1,a\n1,b\n1,c\n2,d\n4,e\n,f\n" as &[u8],
+        &CsvOptions::default(),
+    )
+    .unwrap();
+    e.load_csv(
+        "r",
+        b"k,note\n1,X\n1,Y\n3,Z\n4,W\n,V\n" as &[u8],
+        &CsvOptions::default(),
+    )
+    .unwrap();
+    e
+}
+
+/// Every join type, every algorithm, same answer.
+#[test]
+fn a_merge_join_agrees_with_the_hash_join_on_duplicate_and_null_keys() {
+    let e = merge_engine();
+    for join in ["INNER", "LEFT", "RIGHT", "FULL"] {
+        let sql = format!(
+            "SELECT l.tag, r.note FROM l {join} JOIN r ON l.k = r.k \
+             ORDER BY l.tag NULLS FIRST, r.note NULLS FIRST"
+        );
+        let hash = run(&e, &sql);
+        let merge = e
+            .execute_with(&sql, &ExecOptions::merge_joins())
+            .unwrap_or_else(|d| panic!("{join}: {}", d.render(&sql)));
+        let merge: Vec<Vec<String>> = merge
+            .rows()
+            .iter()
+            .map(|r| r.iter().map(|v| v.to_string()).collect())
+            .collect();
+        assert_eq!(hash, merge, "{join} join");
+    }
+}
+
+#[test]
+fn a_run_of_equal_keys_pairs_with_every_row_of_the_other_run() {
+    // Three left rows with key 1 against two right rows: six pairs, not one.
+    // Getting this wrong is the classic merge-join bug -- loading the right's
+    // run advances past it, so a second left row with the same key has nothing
+    // left to compare against unless the buffer is consulted first.
+    let e = merge_engine();
+    let sql = "SELECT l.tag, r.note FROM l JOIN r ON l.k = r.k WHERE l.k = 1 \
+               ORDER BY l.tag, r.note";
+    let merge = e.execute_with(sql, &ExecOptions::merge_joins()).unwrap();
+    assert_eq!(merge.num_rows(), 6, "three left rows times two right rows");
+    assert_eq!(run(&e, sql).len(), 6);
+}
+
+#[test]
+fn a_null_join_key_matches_nothing_but_still_survives_an_outer_join() {
+    let e = merge_engine();
+    // NULL = NULL is unknown, so the NULL-keyed rows join to nothing...
+    let inner = e
+        .execute_with(
+            "SELECT COUNT(*) FROM l JOIN r ON l.k = r.k",
+            &ExecOptions::merge_joins(),
+        )
+        .unwrap();
+    assert_eq!(inner.rows()[0][0].to_string(), "7"); // 3*2 for key 1, 1 for key 4
+
+    // ...but a LEFT join still emits them, padded.
+    let left = e
+        .execute_with(
+            "SELECT l.tag FROM l LEFT JOIN r ON l.k = r.k WHERE r.note IS NULL \
+             ORDER BY l.tag",
+            &ExecOptions::merge_joins(),
+        )
+        .unwrap();
+    let tags: Vec<String> = left.rows().iter().map(|r| r[0].to_string()).collect();
+    assert_eq!(tags, vec!["d", "f"], "key 2 and the NULL key are unmatched");
+}
+
+#[test]
+fn semi_and_anti_merge_joins_emit_the_left_row_once() {
+    let e = merge_engine();
+    for (sql, want) in [
+        ("SELECT tag FROM l WHERE k IN (SELECT k FROM r) ORDER BY tag", vec!["a", "b", "c", "e"]),
+        // `f` has a NULL key: `r.k = NULL` is unknown for every row, so no
+        // row exists, so NOT EXISTS is TRUE and `f` survives. (NOT IN would
+        // behave differently -- that is the classic trap, and it is why these
+        // two are separate rewrites.)
+        ("SELECT tag FROM l WHERE NOT EXISTS (SELECT 1 FROM r WHERE r.k = l.k) ORDER BY tag", vec!["d", "f"]),
+    ] {
+        let merge = e.execute_with(sql, &ExecOptions::merge_joins()).unwrap();
+        let got: Vec<String> = merge.rows().iter().map(|r| r[0].to_string()).collect();
+        assert_eq!(got, want, "{sql}");
+        // `a` matches two right rows and must appear once, not twice.
+        assert_eq!(run(&e, sql).len(), want.len());
+    }
+}
+
+#[test]
+fn a_merge_join_is_chosen_when_both_inputs_already_arrive_sorted() {
+    // Derived tables with ORDER BY are the only way a plan produces sorted
+    // input today, so they are the case the ordering property was written for.
+    let e = merge_engine();
+    let sql = "SELECT a.tag, b.note FROM (SELECT k, tag FROM l ORDER BY k) a \
+               JOIN (SELECT k, note FROM r ORDER BY k) b ON a.k = b.k";
+    let r = e.execute(sql).unwrap();
+    assert!(
+        uses_operator(&r.stats, "MergeJoin"),
+        "{}",
+        crate::exec::explain_stats(&r.stats)
+    );
+    assert_eq!(r.num_rows(), 7);
+
+    // Sorted the other way on one side, the orderings no longer agree and the
+    // hash join is correct again.
+    let mismatched = "SELECT a.tag, b.note FROM (SELECT k, tag FROM l ORDER BY k) a \
+                      JOIN (SELECT k, note FROM r ORDER BY k DESC) b ON a.k = b.k";
+    let r = e.execute(mismatched).unwrap();
+    assert!(!uses_operator(&r.stats, "MergeJoin"), "directions disagree");
+    assert_eq!(r.num_rows(), 7);
+
+    // And with nothing sorted, a hash join.
+    let r = e.execute("SELECT l.tag FROM l JOIN r ON l.k = r.k").unwrap();
+    assert!(!uses_operator(&r.stats, "MergeJoin"));
+    assert!(uses_operator(&r.stats, "HashJoin"));
+}
+
+#[test]
+fn a_streaming_aggregate_is_chosen_when_the_input_arrives_sorted() {
+    let e = engine();
+    let sorted = "SELECT city, COUNT(*) FROM (SELECT city FROM people ORDER BY city) s \
+                  GROUP BY city";
+    let r = e.execute(sorted).unwrap();
+    assert!(
+        uses_operator(&r.stats, "StreamAggregate"),
+        "{}",
+        crate::exec::explain_stats(&r.stats)
+    );
+
+    let unsorted = "SELECT city, COUNT(*) FROM people GROUP BY city";
+    let r = e.execute(unsorted).unwrap();
+    assert!(uses_operator(&r.stats, "HashAggregate"));
+    assert!(!uses_operator(&r.stats, "StreamAggregate"));
+}
+
+#[test]
+fn a_streaming_aggregate_holds_one_group_and_emits_in_key_order() {
+    let mut csv = String::from("k,v\n");
+    for i in 0..3000 {
+        csv.push_str(&format!("{},{}\n", i % 500, i));
+    }
+    let mut e = Engine::new();
+    e.load_csv("t", csv.as_bytes(), &CsvOptions::default())
+        .unwrap();
+
+    let sql = "SELECT k, COUNT(*), SUM(v) FROM t GROUP BY k";
+    let hash = run(&e, sql);
+    let streamed = e
+        .execute_with(sql, &ExecOptions::sorted_aggregates())
+        .unwrap();
+    assert_eq!(streamed.num_rows(), 500);
+
+    // Same groups either way, and the streaming one comes out in key order.
+    let mut hash_sorted = hash.clone();
+    hash_sorted.sort();
+    let mut got: Vec<Vec<String>> = streamed
+        .rows()
+        .iter()
+        .map(|r| r.iter().map(|v| v.to_string()).collect())
+        .collect();
+    let keys: Vec<i64> = streamed
+        .rows()
+        .iter()
+        .map(|r| r[0].to_string().parse().unwrap())
+        .collect();
+    assert!(keys.windows(2).all(|w| w[0] < w[1]), "not in key order");
+    got.sort();
+    assert_eq!(got, hash_sorted);
+}
+
+#[test]
+fn a_streaming_aggregate_groups_nulls_together() {
+    // Grouping treats NULLs as equal even though comparison does not, and the
+    // sort puts them in one contiguous run -- so they must land in one group,
+    // not one group per row.
+    let mut e = Engine::new();
+    e.load_csv(
+        "n",
+        b"k,v\n1,10\n,20\n1,30\n,40\n,50\n" as &[u8],
+        &CsvOptions::default(),
+    )
+    .unwrap();
+    let sql = "SELECT k, COUNT(*), SUM(v) FROM n GROUP BY k";
+    let streamed = e
+        .execute_with(sql, &ExecOptions::sorted_aggregates())
+        .unwrap();
+    assert_eq!(streamed.num_rows(), 2);
+    let rows: Vec<Vec<String>> = streamed
+        .rows()
+        .iter()
+        .map(|r| r.iter().map(|v| v.to_string()).collect())
+        .collect();
+    assert!(rows.iter().any(|r| r[0] == "NULL" && r[1] == "3" && r[2] == "110"));
+    assert!(rows.iter().any(|r| r[0] == "1" && r[1] == "2" && r[2] == "40"));
+}
+
+#[test]
+fn a_streaming_aggregate_with_no_grouping_still_emits_one_row() {
+    // COUNT returns 0 and SUM returns NULL over an empty input -- the trap the
+    // hash aggregate handles by creating its single group up front, and which
+    // the streaming one has to handle at end of input instead.
+    let e = engine();
+    let r = e
+        .execute_with(
+            "SELECT COUNT(*), SUM(age) FROM people WHERE age > 1000",
+            &ExecOptions::sorted_aggregates(),
+        )
+        .unwrap();
+    assert_eq!(r.num_rows(), 1);
+    assert_eq!(r.rows()[0][0].to_string(), "0");
+    assert_eq!(r.rows()[0][1].to_string(), "NULL");
+}
