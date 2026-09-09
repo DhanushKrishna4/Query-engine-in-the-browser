@@ -350,6 +350,23 @@ fn estimate(
     out: &mut HashMap<RelId, f64>,
 ) -> Estimate {
     let result = match plan {
+        // The definition is not a *child* -- no rule may rewrite through a
+        // reference -- but estimating it is a read, and reading it is far
+        // better than guessing. A CTE renames its columns onto its own
+        // relation exactly as an alias does, so the mapping is the same.
+        LogicalPlan::CteRef { rel, schema, definition, .. } => {
+            let inner = estimate(definition, catalog, out);
+            let mut columns = HashMap::new();
+            for index in 0..schema.len() {
+                if let Some(base) = inner.columns.values().nth(index) {
+                    columns.insert((*rel, index), base.clone());
+                }
+            }
+            Estimate {
+                rows: inner.rows,
+                columns,
+            }
+        }
         LogicalPlan::OneRow { .. } => Estimate {
             rows: 1.0,
             columns: HashMap::new(),

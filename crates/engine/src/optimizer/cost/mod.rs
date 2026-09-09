@@ -125,6 +125,9 @@ impl CostModel {
 
         let own = match plan {
             LogicalPlan::OneRow { .. } => 0.0,
+            // The definition is costed when it is planned, not here; a
+            // reference to an already-materialized result costs a scan of it.
+            LogicalPlan::CteRef { schema, .. } => self.scan(rows(plan), schema.len()).0,
             LogicalPlan::Scan { schema, .. } => self.scan(rows(plan), schema.len()).0,
             LogicalPlan::Filter { input, .. } => self.filter(rows(input)).0,
             LogicalPlan::Project { .. } => self.project(rows(plan)).0,

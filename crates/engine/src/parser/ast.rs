@@ -45,6 +45,10 @@ pub enum Statement {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Query {
+    /// `WITH name AS (...)` definitions, in the order written. A later one may
+    /// reference an earlier one; none may reference itself, because
+    /// `RECURSIVE` is not part of this subset.
+    pub with: Vec<Cte>,
     pub body: SetExpr,
     /// Applies to the whole body, so a set operation is sorted after being
     /// combined rather than each branch being sorted separately.
@@ -179,6 +183,17 @@ impl SelectItem {
 pub struct TableRef {
     pub factor: TableFactor,
     pub alias: Option<Ident>,
+    pub span: Span,
+}
+
+/// One `WITH` binding.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Cte {
+    pub name: Ident,
+    /// `WITH t(a, b) AS (...)` renames the query's output columns. Empty when
+    /// the names come from the query itself.
+    pub columns: Vec<Ident>,
+    pub query: Query,
     pub span: Span,
 }
 

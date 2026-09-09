@@ -18,10 +18,8 @@ use std::sync::Arc;
 
 use crate::catalog::Catalog;
 use crate::error::{closest_match, Diagnostic, Result, Span};
-use crate::parser::ast::{
-    BinaryOperator, Expr, FromItem, FunctionArg, Ident, JoinConstraint, Literal, OrderByExpr,
-    Query, Select, SelectItem, SetExpr, Statement, TableFactor, TableRef, UnaryOperator,
-};
+use crate::parser::ast::{Cte, BinaryOperator, Expr, FromItem, FunctionArg, Ident, JoinConstraint, Literal, OrderByExpr,
+    Query, Select, SelectItem, SetExpr, Statement, TableFactor, TableRef, UnaryOperator,};
 use crate::plan::{
     AggregateFunction, BoundAggregate, BoundExpr, BoundExprKind, BoundWindowFunction, ExprId,
     Frame, FrameBound, FrameUnits, JoinType, LogicalPlan, RelId, SortKey, SubqueryKind,
@@ -73,6 +71,21 @@ pub struct Binder<'a> {
     /// Window functions collected while binding the SELECT list, grouped by the
     /// `OVER (...)` clause they share.
     windows: Vec<WindowGroup>,
+    /// One frame per `WITH` clause, innermost last. A name is looked up here
+    /// before the catalog, so a CTE shadows a real table of the same name --
+    /// which is what the standard says and what every engine does.
+    ctes: Vec<Vec<CteBinding>>,
+}
+
+/// A bound `WITH` definition.
+#[derive(Debug, Clone)]
+struct CteBinding {
+    /// Case-folded, because an unquoted reference matches case-insensitively.
+    name: String,
+    /// Shared with every reference, which is how the executor knows two
+    /// references are to the same thing and computes it once.
+    definition: Arc<LogicalPlan>,
+    schema: Arc<Schema>,
 }
 
 /// One `OVER (...)` clause and the functions using it.
@@ -106,6 +119,7 @@ impl<'a> Binder<'a> {
             agg: None,
             inside_aggregate: false,
             windows: Vec::new(),
+            ctes: Vec::new(),
         }
     }
 
@@ -137,6 +151,28 @@ impl<'a> Binder<'a> {
     // -- statements ---------------------------------------------------------
 
     pub fn bind_query(&mut self, q: &Query) -> Result<LogicalPlan> {
+        // `WITH` definitions come into scope in the order written -- a later
+        // one may name an earlier one -- and go out of scope with the query
+        // that introduced them. The frame is popped whether binding the body
+        // succeeded or not, or a failed subquery would leave its names visible.
+        let scoped = !q.with.is_empty();
+        if scoped {
+            self.ctes.push(Vec::new());
+            for cte in &q.with {
+                if let Err(e) = self.bind_cte(cte) {
+                    self.ctes.pop();
+                    return Err(e);
+                }
+            }
+        }
+        let result = self.bind_query_body(q);
+        if scoped {
+            self.ctes.pop();
+        }
+        result
+    }
+
+    fn bind_query_body(&mut self, q: &Query) -> Result<LogicalPlan> {
         let mut plan = self.bind_set_expr(&q.body)?;
 
         // ORDER BY is applied to the query's *output*, after DISTINCT and after
@@ -930,6 +966,27 @@ impl<'a> Binder<'a> {
 
     fn bind_named_table(&mut self, name: &Ident, alias: Option<&Ident>) -> Result<LogicalPlan> {
         let wanted = name.normalized();
+
+        // A CTE shadows a catalog table of the same name.
+        if let Some(cte) = self.lookup_cte(&wanted) {
+            let rel = self.new_rel();
+            let binding = match alias {
+                Some(a) => a.normalized(),
+                None => cte.name.clone(),
+            };
+            self.scope().push(ScopeEntry {
+                rel,
+                binding,
+                schema: Arc::clone(&cte.schema),
+            });
+            return Ok(LogicalPlan::CteRef {
+                rel,
+                name: cte.name.clone(),
+                definition: cte.definition,
+                schema: cte.schema,
+            });
+        }
+
         let Some(table) = self.catalog.get(&wanted, name.quoted) else {
             let names = self.catalog.table_names();
             let mut d = Diagnostic::bind(format!("no such table `{}`", name.value), name.span);
@@ -989,6 +1046,69 @@ impl<'a> Binder<'a> {
     }
 
     /// Bind a query that cannot see the enclosing one at all.
+    /// Bind one `WITH` definition and put its name in scope.
+    ///
+    /// A CTE cannot see the query that introduces it -- it is a standalone
+    /// query with a name -- so it binds in an isolated scope, exactly as a
+    /// derived table does.
+    fn bind_cte(&mut self, cte: &Cte) -> Result<()> {
+        let name = cte.name.normalized();
+        if self
+            .ctes
+            .last()
+            .is_some_and(|frame| frame.iter().any(|b| b.name == name))
+        {
+            return Err(Diagnostic::bind(
+                format!("`{}` is defined twice in the same WITH clause", cte.name.value),
+                cte.name.span,
+            ));
+        }
+
+        let plan = self.bind_isolated_query(&cte.query)?;
+        let inner = plan.schema();
+
+        // `WITH t(a, b) AS (...)` renames the output columns positionally.
+        let schema = if cte.columns.is_empty() {
+            inner
+        } else {
+            if cte.columns.len() != inner.len() {
+                return Err(Diagnostic::bind(
+                    format!(
+                        "`{}` names {} column(s) but its query produces {}",
+                        cte.name.value,
+                        cte.columns.len(),
+                        inner.len()
+                    ),
+                    cte.span,
+                ));
+            }
+            Arc::new(Schema::new(
+                inner
+                    .fields
+                    .iter()
+                    .zip(&cte.columns)
+                    .map(|(f, name)| Field::new(name.normalized(), f.data_type, f.nullable))
+                    .collect(),
+            ))
+        };
+
+        self.ctes.last_mut().expect("a frame was pushed").push(CteBinding {
+            name,
+            definition: Arc::new(plan),
+            schema,
+        });
+        Ok(())
+    }
+
+    /// The innermost `WITH` binding for a name, if any.
+    fn lookup_cte(&self, name: &str) -> Option<CteBinding> {
+        self.ctes
+            .iter()
+            .rev()
+            .find_map(|frame| frame.iter().find(|b| b.name == name))
+            .cloned()
+    }
+
     fn bind_isolated_query(&mut self, query: &Query) -> Result<LogicalPlan> {
         let saved_scopes = std::mem::replace(&mut self.scopes, vec![Vec::new()]);
         let saved_agg = self.agg.take();
@@ -2209,6 +2329,7 @@ fn collect_relations(plan: &LogicalPlan, out: &mut Vec<RelId>) {
     match plan {
         LogicalPlan::Scan { rel, .. }
         | LogicalPlan::Aggregate { rel, .. }
+        | LogicalPlan::CteRef { rel, .. }
         | LogicalPlan::SubqueryAlias { rel, .. } => out.push(*rel),
         LogicalPlan::Sort { input, .. } | LogicalPlan::Distinct { input, .. } => {
             collect_relations(input, out)

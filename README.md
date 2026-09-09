@@ -13,9 +13,8 @@ No SQL parser crates, no DataFusion/Polars/DuckDB, no Arrow. The engine crate
 has **zero dependencies** and CI fails if it grows one.
 
 **Status: the twenty build-order steps are done**, with real exceptions rather
-than a clean sweep -- the storage layer has no compression encodings of its own,
-CTEs are parsed only to be rejected by name, and several rewrite rules the spec
-lists are missing. Those and twenty others are written down in
+than a clean sweep -- the storage layer has no compression encodings of its own
+and several rewrite rules the spec lists are missing. Those and twenty others are written down in
 [Deliberate gaps](#deliberate-gaps); nothing is claimed there that is not
 true here.
 
@@ -123,6 +122,8 @@ SELECT [DISTINCT] [items] FROM table [alias]
   [WHERE pred] [GROUP BY exprs] [HAVING pred]
   [{UNION|INTERSECT|EXCEPT} [ALL] SELECT ...]...
   [ORDER BY exprs [ASC|DESC] [NULLS FIRST|LAST]] [LIMIT n [OFFSET m]]
+
+WITH name [(cols)] AS (query) [, ...] SELECT ...
 ```
 
 with derived tables (`FROM (SELECT ...) x`) anywhere a table can go, over a
@@ -133,9 +134,11 @@ complete expression grammar: arithmetic, comparison, `AND`/`OR`/`NOT`, `||`,
 cross joins. Aggregates are `COUNT(*)`, `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`,
 each with an optional `DISTINCT`, and window functions -- `ROW_NUMBER`, `RANK`,
 `DENSE_RANK`, `LAG`, `LEAD` and the aggregates -- over
-`OVER (PARTITION BY ... ORDER BY ... [ROWS|RANGE frame])`. Anything outside that
-subset -- CTEs, `USING`, `GROUPS` frames, `RANGE` frames with numeric offsets --
-is recognised and rejected by name, so you get
+`OVER (PARTITION BY ... ORDER BY ... [ROWS|RANGE frame])`. Common table expressions bind as named
+relations and shadow a catalog table of the same name; a CTE referenced twice is
+materialized once and both references read the same buffer. Anything outside
+that subset -- `RECURSIVE` CTEs, `USING`, `GROUPS` frames, `RANGE` frames with
+numeric offsets -- is recognised and rejected by name, so you get
 `common table expressions is not supported yet` rather than a confusing parse
 error.
 
@@ -1667,6 +1670,16 @@ group and got compacted every time. That alone cost 2x.
 - **`COUNT(*)` reads a column.** A scan with no predicate and no projection
   could answer it from the catalog's row count; sql.js beats this engine on
   exactly that query because SQLite does.
+- **A CTE is opaque to the optimizer.** Its definition is shared by every
+  reference, so no rule may rewrite through one of them -- which means
+  `WITH t AS (SELECT * FROM big) SELECT * FROM t WHERE x > 5` cannot push the
+  filter into the CTE. Inlining a definition referenced exactly once is the
+  standard fix and is not done. Postgres shipped the same trade for twenty
+  years before adding that heuristic.
+- **A CTE is materialized when the plan is built**, not on first read, so it is
+  computed even when a `LIMIT` above it would have consumed nothing.
+- **No recursive CTEs.** `WITH RECURSIVE` is a fixpoint computation rather than
+  a named subquery and is refused by name.
 - **Indexes are built eagerly and never maintained.** `.index` walks the column
   and constructs the tree by repeated insertion, which is what exercises the
   split logic but is several times slower than bulk-loading from sorted input.
@@ -1691,7 +1704,7 @@ group and got compacted every time. That alone cost 2x.
 
 ## Testing
 
-`cargo test` -- 308 tests plus a 974-record sqllogictest corpus, every query of
+`cargo test` -- 308 tests plus a 997-record sqllogictest corpus, every query of
 which is additionally run seven ways and compared, run a second time against
 Parquet-backed tables, and scored for estimation accuracy.
 

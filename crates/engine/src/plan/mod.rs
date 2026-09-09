@@ -742,6 +742,26 @@ pub enum LogicalPlan {
         schema: Arc<Schema>,
         input: Box<LogicalPlan>,
     },
+    /// A reference to a `WITH` binding.
+    ///
+    /// The definition is behind an `Arc` shared by every reference to the same
+    /// CTE, which is what lets the executor compute it once however many times
+    /// it is named. It is deliberately **not** a child: a rule that pushed a
+    /// predicate from one reference into the shared definition would change
+    /// what the *other* references see, so the definition is opaque to
+    /// rewrites and optimized on its own.
+    ///
+    /// The cost of that opacity is real and worth naming: `WITH t AS (SELECT *
+    /// FROM big) SELECT * FROM t WHERE x > 5` cannot push the filter into the
+    /// CTE, where inlining the definition at each use would. Postgres made the
+    /// same trade for twenty years before adding a heuristic to inline
+    /// single-reference CTEs, which is the obvious next step here.
+    CteRef {
+        rel: RelId,
+        name: String,
+        definition: Arc<LogicalPlan>,
+        schema: Arc<Schema>,
+    },
     Sort {
         rel: RelId,
         keys: Vec<SortKey>,
@@ -808,6 +828,7 @@ impl LogicalPlan {
             | LogicalPlan::Window { rel, .. }
             | LogicalPlan::Distinct { rel, .. }
             | LogicalPlan::SetOp { rel, .. }
+            | LogicalPlan::CteRef { rel, .. }
             | LogicalPlan::Aggregate { rel, .. } => *rel,
         }
     }
@@ -815,7 +836,8 @@ impl LogicalPlan {
     pub fn schema(&self) -> Arc<Schema> {
         match self {
             LogicalPlan::OneRow { .. } => Arc::new(Schema::empty()),
-            LogicalPlan::Scan { schema, .. }
+            LogicalPlan::CteRef { schema, .. }
+            | LogicalPlan::Scan { schema, .. }
             | LogicalPlan::Project { schema, .. }
             | LogicalPlan::Join { schema, .. }
             | LogicalPlan::SubqueryAlias { schema, .. }
@@ -834,7 +856,12 @@ impl LogicalPlan {
     pub fn with_children(&self, mut children: Vec<LogicalPlan>) -> LogicalPlan {
         debug_assert_eq!(children.len(), self.children().len());
         match self {
-            LogicalPlan::OneRow { .. } | LogicalPlan::Scan { .. } => self.clone(),
+            LogicalPlan::OneRow { .. }
+            | LogicalPlan::Scan { .. }
+            // A CTE reference has no children to rebuild: its definition is
+            // shared with every other reference, so no rule may rewrite it
+            // through one of them.
+            | LogicalPlan::CteRef { .. } => self.clone(),
             LogicalPlan::Filter { rel, predicate, .. } => LogicalPlan::Filter {
                 rel: *rel,
                 predicate: predicate.clone(),
@@ -930,6 +957,7 @@ impl LogicalPlan {
     fn collect_relations(&self, out: &mut std::collections::BTreeSet<RelId>) {
         match self {
             LogicalPlan::Scan { rel, .. }
+            | LogicalPlan::CteRef { rel, .. }
             | LogicalPlan::Aggregate { rel, .. }
             | LogicalPlan::SubqueryAlias { rel, .. } => {
                 out.insert(*rel);
@@ -959,7 +987,9 @@ impl LogicalPlan {
 
     pub fn children(&self) -> Vec<&LogicalPlan> {
         match self {
-            LogicalPlan::OneRow { .. } | LogicalPlan::Scan { .. } => Vec::new(),
+            LogicalPlan::OneRow { .. }
+            | LogicalPlan::Scan { .. }
+            | LogicalPlan::CteRef { .. } => Vec::new(),
             LogicalPlan::Filter { input, .. }
             | LogicalPlan::Project { input, .. }
             | LogicalPlan::Aggregate { input, .. }
@@ -977,6 +1007,7 @@ impl LogicalPlan {
     pub fn describe(&self, typed: bool) -> String {
         match self {
             LogicalPlan::OneRow { .. } => "OneRow".to_string(),
+            LogicalPlan::CteRef { name, .. } => format!("CteRef {name}"),
             LogicalPlan::Scan { table_name, table_schema, schema, .. } => {
                 let cols: Vec<String> = schema
                     .fields
@@ -1222,6 +1253,7 @@ impl LogicalPlan {
     pub fn for_each_expr(&self, f: &mut impl FnMut(&BoundExpr)) {
         match self {
             LogicalPlan::OneRow { .. }
+            | LogicalPlan::CteRef { .. }
             | LogicalPlan::Scan { .. }
             | LogicalPlan::Limit { .. }
             | LogicalPlan::Distinct { .. }

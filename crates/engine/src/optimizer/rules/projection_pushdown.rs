@@ -43,7 +43,11 @@ impl Rule for ProjectionPushdown {
 /// Every `(relation, column)` any expression in the plan reads.
 fn collect_required(plan: &LogicalPlan, out: &mut BTreeSet<(RelId, usize)>) {
     match plan {
-        LogicalPlan::OneRow { .. } | LogicalPlan::Scan { .. } => {}
+        // A CTE reference owns no expressions, and its definition is shared
+        // -- pruning columns for one reference would break the others.
+        LogicalPlan::OneRow { .. }
+        | LogicalPlan::Scan { .. }
+        | LogicalPlan::CteRef { .. } => {}
         LogicalPlan::Filter { predicate, .. } => columns_of(predicate, out),
         LogicalPlan::Project { exprs, .. } => {
             for e in exprs {

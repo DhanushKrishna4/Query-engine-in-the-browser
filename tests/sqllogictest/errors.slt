@@ -114,8 +114,8 @@ SELECT name FROM people UNION SELECT order_id FROM orders
 statement error must have the same number of columns
 SELECT id FROM people INTERSECT SELECT order_id, product FROM orders
 
-statement error common table expressions (WITH) is not supported yet
-WITH x AS (SELECT 1) SELECT * FROM x
+statement error recursive common table expressions is not supported yet
+WITH RECURSIVE r AS (SELECT 1) SELECT * FROM r
 
 # Windows.
 statement error window functions in an aggregate query are not supported yet

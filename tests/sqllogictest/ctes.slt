@@ -1,0 +1,206 @@
+# Common table expressions.
+#
+# SQLite has had CTEs since 3.8.3, so every one of these is checked against a
+# real implementation rather than against my reading of the standard.
+
+load people data/people.csv
+load orders data/orders.csv
+
+# --- the basic shape --------------------------------------------------------
+
+query IT
+WITH senior AS (SELECT id, name FROM people WHERE age > 50)
+SELECT id, name FROM senior ORDER BY id
+----
+4
+Edsger Dijkstra
+6
+Donald Knuth
+10
+Frances Allen
+
+query I
+WITH e AS (SELECT id FROM people WHERE department = 'Engineering')
+SELECT COUNT(*) FROM e
+----
+4
+
+# The body may filter, join and aggregate over the CTE like any other relation.
+query TI
+WITH e AS (SELECT city, salary FROM people WHERE department = 'Engineering')
+SELECT city, COUNT(*) FROM e GROUP BY city ORDER BY city
+----
+Cambridge
+1
+London
+1
+New York
+2
+
+# --- column renaming --------------------------------------------------------
+
+query TI
+WITH counts(place, n) AS (SELECT city, COUNT(*) FROM people GROUP BY city)
+SELECT place, n FROM counts WHERE n > 1 ORDER BY place
+----
+London
+3
+New York
+2
+
+query II
+WITH t(a, b) AS (SELECT id, age FROM people)
+SELECT a, b FROM t WHERE b < 40 ORDER BY a
+----
+1
+36
+5
+38
+8
+39
+
+# --- several definitions, later ones seeing earlier ones --------------------
+
+query I
+WITH a AS (SELECT 1 AS x), b AS (SELECT x + 1 AS y FROM a) SELECT y FROM b
+----
+2
+
+query TI
+WITH eng AS (SELECT * FROM people WHERE department = 'Engineering'),
+     rich AS (SELECT name, salary FROM eng WHERE salary > 180000)
+SELECT name, salary FROM rich ORDER BY name
+----
+Ada Lovelace
+185000
+Barbara Liskov
+201000
+Grace Hopper
+192000
+
+# --- referenced more than once ----------------------------------------------
+#
+# This engine materializes the definition once and both references read the
+# same buffer; SQLite is free to do something else. The answer must not care.
+
+query I
+WITH big AS (SELECT id, salary FROM people WHERE salary > 180000)
+SELECT COUNT(*) FROM big a JOIN big b ON a.id = b.id
+----
+4
+
+query I
+WITH x AS (SELECT id FROM people WHERE age > 45)
+SELECT COUNT(*) FROM (SELECT id FROM x UNION ALL SELECT id FROM x) u
+----
+8
+
+# --- a CTE shadows a table of the same name ---------------------------------
+
+query I
+WITH people AS (SELECT 99 AS id) SELECT id FROM people
+----
+99
+
+# --- joins, NULLs and ordering through a CTE --------------------------------
+
+query TT rowsort
+WITH o AS (SELECT person_id, product FROM orders WHERE quantity > 1)
+SELECT p.name, o.product FROM people p JOIN o ON p.id = o.person_id
+----
+Ada Lovelace
+keyboard
+Ada Lovelace
+mouse
+Alan Turing
+mouse
+Barbara Liskov
+monitor
+Frances Allen
+desk
+Grace Hopper
+cable
+Margaret Hamilton
+cable
+
+# `score` is NULL for two people; three-valued logic has to survive the CTE.
+query TI
+WITH s AS (SELECT name, score FROM people)
+SELECT name, score IS NULL FROM s WHERE score IS NULL ORDER BY name
+----
+Alan Turing
+1
+Tim Berners-Lee
+1
+
+query IR
+WITH s AS (SELECT id, score FROM people WHERE score IS NOT NULL)
+SELECT id, score FROM s WHERE score > 9 ORDER BY id
+----
+1
+9.500
+5
+9.500
+6
+9.900
+8
+9.100
+
+# An ORDER BY and LIMIT inside the definition, and another outside it.
+query IT
+WITH top AS (SELECT id, name FROM people ORDER BY salary DESC LIMIT 3)
+SELECT id, name FROM top ORDER BY name
+----
+5
+Barbara Liskov
+2
+Grace Hopper
+9
+Tim Berners-Lee
+
+# --- a CTE inside a subquery, with its own scope ----------------------------
+
+query I
+SELECT COUNT(*) FROM people WHERE id IN (
+  WITH young AS (SELECT id FROM people WHERE age < 40) SELECT id FROM young
+)
+----
+3
+
+# --- set operations over CTEs -----------------------------------------------
+
+query T
+WITH a AS (SELECT city FROM people WHERE department = 'Research'),
+     b AS (SELECT city FROM people WHERE department = 'Analytics')
+SELECT city FROM a UNION SELECT city FROM b ORDER BY city
+----
+Austin
+Hampton
+London
+Palo Alto
+Yorktown
+
+query T
+WITH a AS (SELECT DISTINCT city FROM people)
+SELECT city FROM a EXCEPT SELECT 'London' ORDER BY city
+----
+Austin
+Cambridge
+Hampton
+New York
+Palo Alto
+Yorktown
+
+# --- errors -----------------------------------------------------------------
+
+statement error is defined twice
+WITH d AS (SELECT 1), d AS (SELECT 2) SELECT * FROM d
+
+statement error column
+WITH t(a, b) AS (SELECT id FROM people) SELECT a FROM t
+
+statement error recursive
+WITH RECURSIVE r AS (SELECT 1) SELECT * FROM r
+
+statement error no such table
+WITH x AS (SELECT 1) SELECT * FROM y

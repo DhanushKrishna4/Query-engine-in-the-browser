@@ -1017,7 +1017,8 @@ pub fn build_with(
     // Estimated cardinalities are attached as the tree is built, so that after
     // execution every operator can report its prediction beside the truth.
     let estimates = crate::optimizer::stats::estimate_all(plan, catalog);
-    let mut root = build_node(plan, catalog, options, &estimates)?;
+    let mut ctes = CteCache::new();
+    let mut root = build_node(plan, catalog, options, &estimates, &mut ctes)?;
     annotate(root.as_mut(), plan, &estimates);
     Ok(root)
 }
@@ -1095,10 +1096,29 @@ fn build_node(
     catalog: &Catalog,
     options: &ExecOptions,
     estimates: &std::collections::HashMap<RelId, f64>,
+    ctes: &mut CteCache,
 ) -> Result<Box<dyn Operator>> {
     let _ = estimates;
     Ok(match plan {
         LogicalPlan::OneRow { .. } => Box::new(OneRowExec::new()),
+
+        // The definition is executed the first time any reference to it is
+        // built, and every later reference reads the same buffer. That is
+        // eager -- a CTE is computed even if a LIMIT above it would have read
+        // nothing -- which is the price of computing it exactly once.
+        LogicalPlan::CteRef { name, definition, schema, .. } => {
+            let key = Arc::as_ptr(definition) as usize;
+            let batches = match ctes.get(&key) {
+                Some(b) => Arc::clone(b),
+                None => {
+                    let mut op = build_node(definition, catalog, options, estimates, ctes)?;
+                    let materialized = Arc::new(collect(op.as_mut())?);
+                    ctes.insert(key, Arc::clone(&materialized));
+                    materialized
+                }
+            };
+            Box::new(MaterializedExec::new(batches, Arc::clone(schema), name))
+        }
 
         LogicalPlan::Scan { table_name, projection, schema, .. } => {
             let table = catalog.get(table_name, false).ok_or_else(|| {
@@ -1148,7 +1168,7 @@ fn build_node(
                         }
                     }
                 }
-                _ => build_node(input, catalog, options, estimates)?,
+                _ => build_node(input, catalog, options, estimates, ctes)?,
             };
             Box::new(FilterExec::new(child, predicate.clone(), ctx, options)?)
         }
@@ -1156,7 +1176,7 @@ fn build_node(
         LogicalPlan::Project { exprs, schema, input, .. } => {
             let ctx = output_context(input);
             Box::new(ProjectExec::new(
-                build_node(input, catalog, options, estimates)?,
+                build_node(input, catalog, options, estimates, ctes)?,
                 exprs.clone(),
                 Arc::clone(schema),
                 ctx,
@@ -1185,7 +1205,7 @@ fn build_node(
                     .collect::<Result<Vec<_>>>()?;
                 let schema = sorted.schema();
                 let top = TopNExec::new(
-                    build_node(sorted, catalog, options, estimates)?,
+                    build_node(sorted, catalog, options, estimates, ctes)?,
                     compiled,
                     schema,
                     skip + fetch,
@@ -1193,7 +1213,7 @@ fn build_node(
                 return Ok(Box::new(LimitExec::new(Box::new(top), *skip, Some(*fetch))));
             }
             Box::new(LimitExec::new(
-                build_node(input, catalog, options, estimates)?,
+                build_node(input, catalog, options, estimates, ctes)?,
                 *skip,
                 *fetch,
             ))
@@ -1213,14 +1233,14 @@ fn build_node(
                 .collect::<Result<Vec<_>>>()?;
             let schema = input.schema();
             Box::new(SortExec::new(
-                build_node(input, catalog, options, estimates)?,
+                build_node(input, catalog, options, estimates, ctes)?,
                 compiled,
                 schema,
             ))
         }
 
         LogicalPlan::Distinct { input, .. } => Box::new(DistinctExec::new(build_node(
-            input, catalog, options, estimates,
+            input, catalog, options, estimates, ctes,
         )?)),
 
         LogicalPlan::Window { partition_by, order_by, functions, schema, input, .. } => {
@@ -1261,7 +1281,7 @@ fn build_node(
                 })
                 .collect::<Result<Vec<_>>>()?;
             Box::new(WindowExec::new(
-                build_node(input, catalog, options, estimates)?,
+                build_node(input, catalog, options, estimates, ctes)?,
                 partition,
                 order,
                 compiled,
@@ -1270,20 +1290,22 @@ fn build_node(
         }
 
         LogicalPlan::SetOp { op, all, left, right, schema, .. } => Box::new(SetOpExec::new(
-            build_node(left, catalog, options, estimates)?,
-            build_node(right, catalog, options, estimates)?,
+            build_node(left, catalog, options, estimates, ctes)?,
+            build_node(right, catalog, options, estimates, ctes)?,
             *op,
             *all,
             Arc::clone(schema),
         )),
 
         LogicalPlan::Join { join_type, on, left, right, schema, .. } => {
-            build_join(*join_type, on.as_ref(), left, right, schema, catalog, options, estimates)?
+            build_join(
+                *join_type, on.as_ref(), left, right, schema, catalog, options, estimates, ctes,
+            )?
         }
 
         // Naming a subquery's output is a planning concern only -- there is
         // nothing to do at run time but hand the rows through.
-        LogicalPlan::SubqueryAlias { input, .. } => build_node(input, catalog, options, estimates)?,
+        LogicalPlan::SubqueryAlias { input, .. } => build_node(input, catalog, options, estimates, ctes)?,
 
         LogicalPlan::Aggregate { group_exprs, aggregates, schema, input, .. } => {
             let ctx = output_context(input);
@@ -1305,7 +1327,7 @@ fn build_node(
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
-            let child = build_node(input, catalog, options, estimates)?;
+            let child = build_node(input, catalog, options, estimates, ctes)?;
 
             // The other operator choice this step added. A streaming aggregate
             // needs its input grouped together, which sorted input gives it;
@@ -1349,6 +1371,64 @@ fn build_node(
     })
 }
 
+/// Materialized `WITH` results, keyed by the identity of the definition plan.
+///
+/// Every reference to one CTE shares an `Arc` of the same definition, so the
+/// pointer is the key. This is what makes a CTE named three times cost one
+/// execution rather than three.
+type CteCache = std::collections::HashMap<usize, Arc<Vec<Batch>>>;
+
+/// An operator over batches that have already been computed.
+///
+/// A CTE's rows, replayed. Holding them behind an `Arc` means the second and
+/// third references share the buffer rather than copying it.
+struct MaterializedExec {
+    batches: Arc<Vec<Batch>>,
+    schema: Arc<Schema>,
+    emitted: usize,
+    stats: OperatorStats,
+}
+
+impl MaterializedExec {
+    fn new(batches: Arc<Vec<Batch>>, schema: Arc<Schema>, name: &str) -> MaterializedExec {
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        MaterializedExec {
+            batches,
+            schema,
+            emitted: 0,
+            stats: OperatorStats::new(
+                "CteScan",
+                format!("{name}, {rows} row(s) materialized once and shared"),
+            ),
+        }
+    }
+}
+
+impl Operator for MaterializedExec {
+    fn set_estimated_rows(&mut self, rows: f64) {
+        self.stats.estimated_rows = Some(rows);
+    }
+
+    fn schema(&self) -> Arc<Schema> {
+        Arc::clone(&self.schema)
+    }
+
+    fn next(&mut self) -> Result<Option<Batch>> {
+        let timer = Timer::start();
+        let out = self.batches.get(self.emitted).cloned();
+        self.emitted += 1;
+        self.stats.elapsed_nanos += timer.elapsed_nanos();
+        if let Some(b) = &out {
+            self.stats.record_output(b);
+        }
+        Ok(out)
+    }
+
+    fn stats(&self) -> &OperatorStats {
+        &self.stats
+    }
+}
+
 /// Choose a join implementation.
 ///
 /// This is the engine's first real operator selection. The rule is simple and
@@ -1375,6 +1455,7 @@ fn build_join(
     catalog: &Catalog,
     options: &ExecOptions,
     estimates: &std::collections::HashMap<RelId, f64>,
+    ctes: &mut CteCache,
 ) -> Result<Box<dyn Operator>> {
     let left_ctx = output_context(left);
     let right_ctx = output_context(right);
@@ -1392,8 +1473,8 @@ fn build_join(
         (None, _) => (Vec::new(), None),
     };
 
-    let left_op = build_node(left, catalog, options, estimates)?;
-    let right_op = build_node(right, catalog, options, estimates)?;
+    let left_op = build_node(left, catalog, options, estimates, ctes)?;
+    let right_op = build_node(right, catalog, options, estimates, ctes)?;
     let residual = match residual {
         Some(r) => Some(expr::compile(&r, &joined_ctx)?),
         None => None,
@@ -1574,6 +1655,11 @@ fn split_join_condition(
 fn output_context(plan: &LogicalPlan) -> EvalContext {
     match plan {
         LogicalPlan::OneRow { .. } => EvalContext::empty(),
+        // A CTE reference names its own relation, exactly as an alias does:
+        // its columns are the definition's, renumbered under the reference.
+        LogicalPlan::CteRef { rel, schema, .. } => {
+            EvalContext::identity(*rel, schema.len())
+        }
         // A projection's columns belong to the projection. Nothing below can
         // see them, but an ORDER BY or a set operation above can.
         LogicalPlan::Project { rel, schema, .. } => EvalContext::identity(*rel, schema.len()),

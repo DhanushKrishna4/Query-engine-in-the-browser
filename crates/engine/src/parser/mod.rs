@@ -21,6 +21,7 @@ pub use ast::{
 
 use crate::error::{Diagnostic, Result, Span};
 use crate::lexer::{tokenize, Keyword, Token, TokenKind};
+use crate::parser::ast::Cte;
 use crate::types::DataType;
 
 /// Binding powers, lowest binds loosest. These encode standard SQL precedence:
@@ -124,9 +125,6 @@ impl Parser {
     // -- statements ---------------------------------------------------------
 
     pub fn parse_statement(&mut self) -> Result<Statement> {
-        if self.at_keyword(Keyword::With) {
-            return Err(self.unsupported("common table expressions (WITH)", self.peek().span));
-        }
         let query = self.parse_query()?;
 
         // A statement may be terminated by `;` but nothing may follow it.
@@ -139,6 +137,7 @@ impl Parser {
 
     fn parse_query(&mut self) -> Result<Query> {
         let start = self.peek().span.start;
+        let with = self.parse_with()?;
         let body = self.parse_set_expr()?;
 
         let mut order_by = Vec::new();
@@ -166,12 +165,79 @@ impl Parser {
 
         let end = self.prev_end(start);
         Ok(Query {
+            with,
             body,
             order_by,
             limit,
             offset,
             span: Span::new(start, end),
         })
+    }
+
+    /// `WITH name [(cols)] AS ( query ) [, ...]`, or nothing.
+    ///
+    /// `RECURSIVE` is rejected by name rather than ignored. A recursive CTE is
+    /// a fixpoint computation, not a named subquery, and binding one as if it
+    /// were the latter would produce an answer that looks reasonable and is
+    /// wrong -- the worst kind.
+    fn parse_with(&mut self) -> Result<Vec<Cte>> {
+        if !self.eat_keyword(Keyword::With) {
+            return Ok(Vec::new());
+        }
+        if self.at_keyword(Keyword::Recursive) {
+            return Err(self.unsupported("recursive common table expressions", self.peek().span));
+        }
+
+        let mut out = Vec::new();
+        loop {
+            let start = self.peek().span.start;
+            let name = self.parse_ident()?;
+
+            let mut columns = Vec::new();
+            if self.at(&TokenKind::LParen) && self.peek_is_column_list() {
+                self.expect(TokenKind::LParen)?;
+                loop {
+                    columns.push(self.parse_ident()?);
+                    if !self.eat(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(TokenKind::RParen)?;
+            }
+
+            self.expect_keyword(Keyword::As)?;
+            self.expect(TokenKind::LParen)?;
+            let query = self.parse_query()?;
+            self.expect(TokenKind::RParen)?;
+
+            let end = self.prev_end(start);
+            out.push(Cte {
+                name,
+                columns,
+                query,
+                span: Span::new(start, end),
+            });
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Distinguish `WITH t(a, b) AS ...` from `WITH t AS (SELECT ...)`.
+    ///
+    /// Both may show a parenthesis after the name. Only a column list has a
+    /// bare identifier immediately inside it followed by a comma or the close.
+    fn peek_is_column_list(&self) -> bool {
+        let is_ident = matches!(
+            self.peek_ahead(1).kind,
+            TokenKind::Ident | TokenKind::QuotedIdent
+        );
+        is_ident
+            && matches!(
+                self.peek_ahead(2).kind,
+                TokenKind::Comma | TokenKind::RParen
+            )
     }
 
     /// SELECTs combined by set operators, left-associative, all at one
@@ -595,7 +661,7 @@ impl Parser {
 
         if self.eat_keyword(Keyword::In) {
             self.expect(TokenKind::LParen)?;
-            if self.at_keyword(Keyword::Select) {
+            if self.at_keyword(Keyword::Select) || self.at_keyword(Keyword::With) {
                 let query = self.parse_query()?;
                 let close = self.expect(TokenKind::RParen)?;
                 return Ok(Expr::InSubquery {
@@ -696,7 +762,7 @@ impl Parser {
             }
             TokenKind::LParen => {
                 self.advance();
-                if self.at_keyword(Keyword::Select) {
+                if self.at_keyword(Keyword::Select) || self.at_keyword(Keyword::With) {
                     let query = self.parse_query()?;
                     let close = self.expect(TokenKind::RParen)?;
                     return Ok(Expr::ScalarSubquery {
@@ -1290,7 +1356,9 @@ Query
     #[test]
     fn unimplemented_clauses_say_so_by_name() {
         for (sql, needle) in [
-            ("WITH x AS (SELECT 1) SELECT * FROM x", "common table expressions"),
+            // CTEs are supported; recursion is not, and is refused by name
+            // rather than bound as if it were an ordinary named subquery.
+            ("WITH RECURSIVE r AS (SELECT 1) SELECT * FROM r", "recursive common table expressions"),
             ("SELECT SUM(a) OVER (GROUPS BETWEEN 1 PRECEDING AND CURRENT ROW) FROM t",
              "GROUPS window frames"),
         ] {
