@@ -1014,3 +1014,112 @@ fn nothing_is_lifted_out_of_the_right_side_of_an_and() {
     );
     assert!(plan.contains("cse_"), "the eager operand should hoist:\n{plan}");
 }
+
+// ---------------------------------------------------------------------------
+// Aggregate pushdown
+// ---------------------------------------------------------------------------
+
+/// A fact table with many rows per group, joined to a dimension -- the shape
+/// eager aggregation exists for. Two rows share `a` so the join duplicates,
+/// which is what makes the re-aggregation above load-bearing.
+fn facts() -> Engine {
+    let mut e = Engine::new();
+    let mut f = String::from("id,dim,amount\n");
+    for i in 0..600 {
+        f.push_str(&format!("{i},{},{i}\n", if i % 2 == 0 { "a" } else { "b" }));
+    }
+    e.load_csv("facts", f.as_bytes(), &CsvOptions::default())
+        .unwrap();
+    // `weight` is numeric so an aggregate can read the dimension side, which
+    // is what the "cannot push into this side" case needs.
+    e.load_csv(
+        "dims",
+        b"dim,label,weight\na,Alpha,2\na,Alpha2,3\nb,Beta,5\n" as &[u8],
+        &CsvOptions::default(),
+    )
+    .unwrap();
+    e
+}
+
+fn eager(e: &Engine, sql: &str) -> String {
+    with_rules(e, sql, vec![Box::new(rules::AggregatePushdown)])
+}
+
+#[test]
+fn an_aggregate_is_pushed_below_a_join() {
+    let e = facts();
+    let plan = eager(
+        &e,
+        "SELECT d.label, SUM(f.amount), COUNT(*) FROM facts f JOIN dims d ON f.dim = d.dim \
+         GROUP BY d.label",
+    );
+    // Two aggregates: the partial below the join and the combine above it.
+    assert_eq!(plan.matches("Aggregate").count(), 2, "{plan}");
+    // The partial sits under the join, directly over the fact scan.
+    let lines: Vec<&str> = plan.lines().collect();
+    let partial = lines
+        .iter()
+        .position(|l| l.contains("Aggregate") && l.contains("SUM(amount)"))
+        .unwrap_or_else(|| panic!("no partial in\n{plan}"));
+    assert!(lines[partial + 1].contains("Scan table=facts"), "{plan}");
+    // COUNT becomes SUM above, because counts of counts are summed.
+    assert!(plan.contains("SUM(p1)"), "COUNT did not become SUM:\n{plan}");
+}
+
+#[test]
+fn an_undecomposable_aggregate_is_refused() {
+    let e = facts();
+    for sql in [
+        // An average of averages is not the average.
+        "SELECT d.label, AVG(f.amount) FROM facts f JOIN dims d ON f.dim = d.dim GROUP BY d.label",
+        // Distinct counts double-count across partitions.
+        "SELECT d.label, COUNT(DISTINCT f.amount) FROM facts f JOIN dims d ON f.dim = d.dim \
+         GROUP BY d.label",
+        // One bad aggregate spoils the whole rewrite.
+        "SELECT d.label, SUM(f.amount), AVG(f.amount) FROM facts f JOIN dims d ON f.dim = d.dim \
+         GROUP BY d.label",
+    ] {
+        let plan = eager(&e, sql);
+        assert_eq!(plan.matches("Aggregate").count(), 1, "{sql}\n{plan}");
+    }
+}
+
+#[test]
+fn an_outer_join_is_refused() {
+    // Padding introduces rows the partial never saw, so the arithmetic above
+    // stops matching.
+    let e = facts();
+    for join in ["LEFT", "RIGHT", "FULL"] {
+        let sql = format!(
+            "SELECT d.label, SUM(f.amount) FROM facts f {join} JOIN dims d ON f.dim = d.dim \
+             GROUP BY d.label"
+        );
+        let plan = eager(&e, &sql);
+        assert_eq!(plan.matches("Aggregate").count(), 1, "{join}\n{plan}");
+    }
+}
+
+#[test]
+fn a_rewrite_that_would_not_reduce_is_refused() {
+    // Grouping the fact side by its own primary key collapses nothing, so the
+    // extra aggregate is pure cost and the estimator says so.
+    let e = facts();
+    let plan = eager(
+        &e,
+        "SELECT f.id, SUM(f.amount) FROM facts f JOIN dims d ON f.dim = d.dim GROUP BY f.id",
+    );
+    assert_eq!(plan.matches("Aggregate").count(), 1, "{plan}");
+}
+
+#[test]
+fn neither_side_qualifying_leaves_the_plan_alone() {
+    // Grouping by a fact column while aggregating a dimension column blocks
+    // both directions: a partial over facts cannot compute `SUM(d.weight)`,
+    // and a partial over dims cannot group by `f.dim`.
+    let e = facts();
+    let plan = eager(
+        &e,
+        "SELECT f.dim, SUM(d.weight) FROM facts f JOIN dims d ON f.dim = d.dim GROUP BY f.dim",
+    );
+    assert_eq!(plan.matches("Aggregate").count(), 1, "{plan}");
+}

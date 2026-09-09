@@ -769,6 +769,115 @@ where a hash aggregate emits in insertion order. Both are correct SQL. The skip
 is conservative -- any `LIMIT` at all under a reordering strategy, since
 `ORDER BY x LIMIT 3` with ties in `x` is just as under-determined.
 
+## The rest of the rewrite rules
+
+Four rules the spec's list named and the optimizer did not have. Each is a
+separate file under `optimizer/rules/`, each individually testable, and each
+recorded in the trace the UI replays.
+
+### Predicate simplification and contradiction detection
+
+A chain of comparisons on one column describes an interval, and an interval can
+be reasoned about:
+
+```text
+  age > 50 AND age > 30   ->   age > 50           the weaker bound says nothing
+  age > 50 AND age < 30   ->   Limit fetch=0      the interval is empty
+  age = 41 AND age > 50   ->   Limit fetch=0
+```
+
+The contradiction becomes literal `false`, which constant folding then turns
+into `Limit fetch=0` -- so the query is skipped rather than run, which is what
+the spec asked for. It is safe under three-valued logic because a filter keeps
+a row only when its predicate is TRUE, and both UNKNOWN and FALSE fail that.
+
+### Outer join demoted to inner
+
+`SELECT * FROM a LEFT JOIN b ON a.id = b.id WHERE b.x > 5` manufactures padded
+rows only to throw them away: `b.x` is NULL in every one, `NULL > 5` is UNKNOWN,
+and the filter wants TRUE. Demoting the join lets predicate pushdown move
+`b.x > 5` into `b`.
+
+This is the mirror of predicate pushdown's central caution. Pushdown may only
+push into the *preserved* side; this rule fires exactly when a predicate on the
+*null-supplying* side makes the outerness pointless. The null-rejection test is
+conservative by design -- `b.x IS NULL` is how an anti-join is written, and
+demoting that join returns nothing at all.
+
+### Common subexpression elimination
+
+`SELECT a + b, (a + b) * 2` evaluated the addition twice per batch. The rule
+hoists it into a projection below and reads the column twice above.
+
+The safety condition is not "cannot raise", which was my first guess and
+excludes all arithmetic -- the case the rule exists for. The inserted projection
+sees the same rows in the same order, so a division by zero happens on the same
+row either way. The hazard is *lazy* positions, where the original evaluates
+over some rows and the hoisted version over all of them: a `CASE` branch, and
+the right operand of `AND` and `OR`. Candidates are never counted there.
+
+```sql
+-- hoisted: one column, read twice
+SELECT (age + salary), (age + salary) * 2 FROM people
+
+-- not hoisted: the division would escape its guard
+SELECT CASE WHEN age > 0 THEN salary / age ELSE 0 END,
+       CASE WHEN age > 0 THEN salary / age ELSE 1 END FROM people
+```
+
+### Aggregate pushdown through joins
+
+Eager aggregation: a partial aggregate below the join, combined above it.
+
+```text
+  Aggregate [region, SUM(fare)]           Aggregate [region, SUM(partial)]
+    -> Join borough                ->       -> Join borough
+      -> Scan trips  (1M rows)                -> Aggregate [borough, SUM(fare)]
+      -> Scan boroughs (5 rows)               |    -> Scan trips
+                                              -> Scan boroughs
+```
+
+The textbook version pushes the whole aggregate below the join and needs the
+other side's key to be unique so the join cannot duplicate. That needs declared
+keys, which this engine does not have. Eager aggregation needs none, because the
+aggregate above is still there to undo the duplication: for one key with `m`
+rows on the pushed side and `n` on the other, `SUM` originally sees `m * n` rows
+and returns `n * sum(x)` -- and the partial returns `sum(x)`, the join makes `n`
+copies, and the `SUM` above returns `n * sum(x)`. `COUNT(*)` works once it
+becomes `SUM` above.
+
+`AVG` and any `DISTINCT` aggregate are refused: neither is decomposable. So are
+outer joins, whose padding the partial never saw.
+
+| query | pushed | not pushed | |
+| --- | ---: | ---: | ---: |
+| `GROUP BY region`, `COUNT`+`SUM` | 122 ms | 232 ms | **1.9x** |
+| `GROUP BY borough`, `COUNT(*)` | 117 ms | 222 ms | 1.9x |
+| `GROUP BY company`, `MIN`+`MAX` | 123 ms | 246 ms | **2.0x** |
+| grouping by a column from each side | 212 ms | 322 ms | 1.5x |
+| 1,008 groups | 143 ms | 254 ms | 1.8x |
+| `AVG` -- refused, not decomposable | 231 ms | 230 ms | 1.0x |
+| grouping by a near-unique column | 376 ms | 373 ms | 1.0x |
+
+The last two rows are the ones worth reading. `AVG` is refused on principle and
+the two configurations run the same plan. The near-unique grouping is refused on
+*evidence*: the partial would collapse 198,612 groups out of a million rows,
+which is not enough to pay for itself, and the estimator says so before the plan
+is built.
+
+### Two bugs, both found by the corpus rather than by me
+
+**A conjunct was dropped if it was any recognised comparison.** `<>` is a
+comparison and bounds no interval, so `HAVING SUM(q) >= 4 AND product <> 'cable'`
+quietly lost its second test. Only conjuncts that actually produced a bound may
+be dropped.
+
+**The FULL join demotion arms were swapped.** Rejecting the right side's NULLs
+kills rows padded on the right, which are the unmatched rows of the *left* -- so
+the answer is a RIGHT join, not a LEFT one. The fuzz corpus caught it returning
+nothing where six rows were expected, under a confident comment justifying the
+wrong direction.
+
 ## In the browser
 
 Running at
@@ -1637,8 +1746,9 @@ group and got compacted every time. That alone cost 2x.
   changes.
 - **No multi-column statistics.** Correlated predicates are the largest source
   of estimation error and nothing here addresses them.
-- **One rule still missing.** Aggregate pushdown through joins. The driver and
-  the trace are built for it; it is a new file in `optimizer/rules/`.
+- **The rule set is now the spec's, but it is not exhaustive.** Aggregate
+  pushdown handles the decomposable aggregates and refuses `AVG`; splitting
+  `AVG` into `SUM/COUNT` so it can be pushed too is a further rewrite.
 - **Correlated subqueries only in WHERE.** A correlated subquery in a
   projection, under an `OR`, or over a plan with `GROUP BY` or `LIMIT` is
   rejected at plan time rather than executed per row. Supporting those needs
@@ -1702,7 +1812,7 @@ group and got compacted every time. That alone cost 2x.
 
 ## Testing
 
-`cargo test` -- 319 tests plus a 1,037-record sqllogictest corpus, every query of
+`cargo test` -- 324 tests plus a 1,050-record sqllogictest corpus, every query of
 which is additionally run seven ways and compared, run a second time against
 Parquet-backed tables, and scored for estimation accuracy.
 

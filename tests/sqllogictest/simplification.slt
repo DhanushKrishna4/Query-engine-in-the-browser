@@ -370,3 +370,244 @@ SELECT id, (score * 2) FROM people WHERE (score * 2) IS NULL ORDER BY id
 NULL
 9
 NULL
+
+# --- aggregate pushdown through a join --------------------------------------
+#
+# Eager aggregation: a partial aggregate below the join, combined above. The
+# duplicate-key cases are the ones that matter -- the whole reason this needs no
+# uniqueness proof is that the aggregate above fixes up the join's duplication,
+# and a dimension row that matches twice is what proves it.
+
+query TI rowsort
+SELECT p.city, COUNT(*) FROM orders o JOIN people p ON o.person_id = p.id GROUP BY p.city
+----
+Cambridge
+1
+Hampton
+1
+London
+6
+New York
+3
+Yorktown
+1
+
+query TI rowsort
+SELECT p.city, SUM(o.quantity) FROM orders o JOIN people p ON o.person_id = p.id GROUP BY p.city
+----
+Cambridge
+5
+Hampton
+1
+London
+11
+New York
+13
+Yorktown
+2
+
+query TII rowsort
+SELECT p.department, MIN(o.quantity), MAX(o.quantity)
+FROM orders o JOIN people p ON o.person_id = p.id GROUP BY p.department
+----
+Analytics
+1
+2
+Engineering
+1
+10
+Research
+1
+2
+
+query TIII rowsort
+SELECT p.city, COUNT(*), SUM(o.quantity), MAX(o.unit_price)
+FROM orders o JOIN people p ON o.person_id = p.id GROUP BY p.city
+----
+Cambridge
+1
+5
+7
+Hampton
+1
+1
+612
+London
+6
+11
+1899
+New York
+3
+13
+349
+Yorktown
+1
+2
+612
+
+# Grouping by a column of the pushed side as well as the other.
+query TTI rowsort
+SELECT p.city, o.product, COUNT(*)
+FROM orders o JOIN people p ON o.person_id = p.id GROUP BY p.city, o.product
+----
+Cambridge
+cable
+1
+Hampton
+desk
+1
+London
+keyboard
+1
+London
+laptop
+2
+London
+monitor
+1
+London
+mouse
+2
+New York
+cable
+1
+New York
+keyboard
+1
+New York
+monitor
+1
+Yorktown
+desk
+1
+
+# No GROUP BY at all: one group over the joined rows.
+query II
+SELECT COUNT(*), SUM(o.quantity) FROM orders o JOIN people p ON o.person_id = p.id
+----
+12
+32
+
+# AVG is not decomposable and must be left alone.
+query TR rowsort
+SELECT p.city, AVG(o.quantity) FROM orders o JOIN people p ON o.person_id = p.id GROUP BY p.city
+----
+Cambridge
+5.000
+Hampton
+1.000
+London
+1.833
+New York
+4.333
+Yorktown
+2.000
+
+# Neither is COUNT(DISTINCT).
+query TI rowsort
+SELECT p.city, COUNT(DISTINCT o.product)
+FROM orders o JOIN people p ON o.person_id = p.id GROUP BY p.city
+----
+Cambridge
+1
+Hampton
+1
+London
+4
+New York
+3
+Yorktown
+1
+
+# An outer join introduces padding the partial never saw.
+query TI rowsort
+SELECT p.city, COUNT(*) FROM people p LEFT JOIN orders o ON p.id = o.person_id GROUP BY p.city
+----
+Austin
+1
+Cambridge
+1
+Hampton
+1
+London
+6
+New York
+3
+Palo Alto
+1
+Yorktown
+1
+
+query TI rowsort
+SELECT p.city, SUM(o.quantity) FROM people p LEFT JOIN orders o ON p.id = o.person_id GROUP BY p.city
+----
+Austin
+NULL
+Cambridge
+5
+Hampton
+1
+London
+11
+New York
+13
+Palo Alto
+NULL
+Yorktown
+2
+
+# A self-join, where both sides carry the same duplicate keys.
+query II rowsort
+SELECT a.person_id, COUNT(*) FROM orders a JOIN orders b ON a.person_id = b.person_id
+GROUP BY a.person_id
+----
+1
+9
+10
+1
+2
+1
+3
+4
+5
+4
+7
+1
+8
+1
+9
+1
+
+# Three tables: the partial has to survive being reordered around.
+query TI rowsort
+SELECT p.city, COUNT(*) FROM orders o JOIN people p ON o.person_id = p.id
+JOIN people q ON q.id = p.id GROUP BY p.city
+----
+Cambridge
+1
+Hampton
+1
+London
+6
+New York
+3
+Yorktown
+1
+
+# An aggregate over the *other* side's column cannot be pushed into this one.
+query TI rowsort
+SELECT o.product, SUM(p.age) FROM orders o JOIN people p ON o.person_id = p.id
+GROUP BY o.product
+----
+cable
+84
+desk
+101
+keyboard
+74
+laptop
+85
+monitor
+79
+mouse
+77

@@ -113,7 +113,8 @@ fn main() -> ExitCode {
                         || v == "no-decorrelation"
                         || v == "no-top-n"
                         || v == "merge-join"
-                        || v == "stream-aggregate" =>
+                        || v == "stream-aggregate"
+                        || v == "no-eager-aggregate" =>
                 {
                     bench_baseline = v
                 }
@@ -748,6 +749,7 @@ fn run_benchmark(
         "no-index" => ExecOptions::without_index_scans(),
         "merge-join" => ExecOptions::merge_joins(),
         "stream-aggregate" => ExecOptions::sorted_aggregates(),
+        "no-eager-aggregate" => ExecOptions::without_aggregate_pushdown(),
         "no-reorder" => ExecOptions::without_join_reorder(),
         "no-decorrelation" => ExecOptions::without_decorrelation(),
         "no-top-n" => ExecOptions::without_top_n(),

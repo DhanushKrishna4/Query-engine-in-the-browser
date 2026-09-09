@@ -272,6 +272,9 @@ pub struct ExecOptions {
     /// Whether a `LIMIT` above a `Sort` becomes a bounded top-N heap instead of
     /// ordering the whole input.
     pub top_n: bool,
+    /// Whether an aggregate may be split into a partial below a join and a
+    /// combine above it.
+    pub aggregate_pushdown: bool,
     /// Whether `IN` and `EXISTS` become semi- and anti-joins.
     ///
     /// Turning this off leaves them to be evaluated and materialized instead,
@@ -304,6 +307,7 @@ impl Default for ExecOptions {
             reorder_joins: true,
             top_n: true,
             decorrelate: true,
+            aggregate_pushdown: true,
             zone_map_pruning: true,
             bloom_filters: true,
             index_scans: true,
@@ -414,6 +418,14 @@ impl ExecOptions {
     pub fn without_top_n() -> ExecOptions {
         ExecOptions {
             top_n: false,
+            ..Default::default()
+        }
+    }
+
+    /// Leaves an aggregate above its join, which is where the binder put it.
+    pub fn without_aggregate_pushdown() -> ExecOptions {
+        ExecOptions {
+            aggregate_pushdown: false,
             ..Default::default()
         }
     }

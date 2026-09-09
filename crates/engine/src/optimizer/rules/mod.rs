@@ -3,6 +3,7 @@
 //! Each is an independent transformation of one plan node, testable on its own
 //! by running an optimizer built from that rule alone.
 
+mod aggregate_pushdown;
 mod common_subexpression;
 mod constant_folding;
 mod decorrelate;
@@ -13,6 +14,7 @@ mod predicate_pushdown;
 mod predicate_simplification;
 mod projection_pushdown;
 
+pub use aggregate_pushdown::AggregatePushdown;
 pub use common_subexpression::CommonSubexpression;
 pub use constant_folding::ConstantFolding;
 pub use decorrelate::{Decorrelate, EvaluateSubqueries};

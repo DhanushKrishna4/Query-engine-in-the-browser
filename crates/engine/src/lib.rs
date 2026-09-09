@@ -217,7 +217,11 @@ impl Engine {
         let plan = self.bound_plan(sql)?;
         // Even "unoptimized" runs the mandatory rules: a subquery expression
         // has no execution strategy, so something has to remove it.
-        let plan = if options.optimize && options.reorder_joins && options.decorrelate {
+        let plan = if options.optimize
+            && options.reorder_joins
+            && options.decorrelate
+            && options.aggregate_pushdown
+        {
             self.optimize(plan, &self.optimizer)?
         } else {
             let mut rules: Vec<Box<dyn optimizer::Rule>> = Vec::new();
@@ -229,6 +233,12 @@ impl Engine {
                 rules.push(Box::new(optimizer::rules::ConstantFolding));
                 rules.push(Box::new(optimizer::rules::PredicatePushdown));
                 rules.push(Box::new(optimizer::rules::LimitPushdown));
+                rules.push(Box::new(optimizer::rules::PredicateSimplification));
+                rules.push(Box::new(optimizer::rules::OuterToInner));
+                rules.push(Box::new(optimizer::rules::CommonSubexpression));
+                if options.aggregate_pushdown {
+                    rules.push(Box::new(optimizer::rules::AggregatePushdown));
+                }
                 if options.reorder_joins {
                     rules.push(Box::new(optimizer::rules::JoinReorder));
                 }
