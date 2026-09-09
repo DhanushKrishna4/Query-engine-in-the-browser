@@ -182,6 +182,8 @@ impl Optimizer {
     pub fn new() -> Optimizer {
         let mut rules = Optimizer::mandatory_rules();
         rules.push(Box::new(rules::ConstantFolding));
+        rules.push(Box::new(rules::PredicateSimplification));
+        rules.push(Box::new(rules::OuterToInner));
         rules.push(Box::new(rules::PredicatePushdown));
         rules.push(Box::new(rules::LimitPushdown));
         rules.push(Box::new(rules::JoinReorder));

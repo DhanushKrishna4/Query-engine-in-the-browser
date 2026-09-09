@@ -1,0 +1,271 @@
+# Predicate simplification and contradiction detection.
+#
+# Every rewrite here must leave the answer alone, which is what makes these
+# worth putting in the differential corpus rather than only in plan assertions:
+# SQLite computes the same rows without any of these rules, and
+# `evaluator_agreement.rs` runs each of them again with the optimizer disabled.
+
+load people data/people.csv
+
+# --- redundant bounds -------------------------------------------------------
+
+query T
+SELECT name FROM people WHERE age > 50 AND age > 30 ORDER BY name
+----
+Donald Knuth
+Edsger Dijkstra
+Frances Allen
+
+query T
+SELECT name FROM people WHERE age < 40 AND age <= 45 AND age < 60 ORDER BY name
+----
+Ada Lovelace
+Barbara Liskov
+Margaret Hamilton
+
+query T
+SELECT name FROM people WHERE age >= 41 AND age > 40 ORDER BY name
+----
+Alan Turing
+Donald Knuth
+Edsger Dijkstra
+Frances Allen
+Grace Hopper
+Katherine Johnson
+Tim Berners-Lee
+
+# A bound that is *not* redundant survives on each end.
+query T
+SELECT name FROM people WHERE age > 38 AND age < 45 ORDER BY name
+----
+Alan Turing
+Katherine Johnson
+Margaret Hamilton
+
+# Equality pins both ends, and a weaker bound around it says nothing.
+query T
+SELECT name FROM people WHERE age = 41 AND age > 30 AND age < 90 ORDER BY name
+----
+Alan Turing
+
+# --- contradictions ---------------------------------------------------------
+
+query T
+SELECT name FROM people WHERE age > 50 AND age < 30
+----
+
+query T
+SELECT name FROM people WHERE age = 41 AND age > 50
+----
+
+query T
+SELECT name FROM people WHERE age > 40 AND age < 40
+----
+
+query T
+SELECT name FROM people WHERE salary > 200000 AND salary <= 100000
+----
+
+# `>= 40 AND <= 40` is satisfiable by exactly 40 and must NOT be called a
+# contradiction -- the inclusive case is the one an interval check gets wrong.
+query TI
+SELECT name, age FROM people WHERE age >= 41 AND age <= 41 ORDER BY name
+----
+Alan Turing
+41
+
+# --- NULLs ------------------------------------------------------------------
+#
+# `score` is NULL for two rows. A dropped conjunct must not change what happens
+# to them: UNKNOWN AND UNKNOWN is UNKNOWN, and so is UNKNOWN alone.
+
+query TR
+SELECT name, score FROM people WHERE score > 9 AND score > 7 ORDER BY name
+----
+Ada Lovelace
+9.500
+Barbara Liskov
+9.500
+Donald Knuth
+9.900
+Margaret Hamilton
+9.100
+
+query I
+SELECT COUNT(*) FROM people WHERE score > 9 AND score < 1
+----
+0
+
+query I
+SELECT COUNT(*) FROM people WHERE score IS NULL AND score > 5
+----
+0
+
+# --- mixed with predicates the rule does not understand ---------------------
+
+query T
+SELECT name FROM people WHERE age > 30 AND city = 'London' AND age > 45 ORDER BY name
+----
+Tim Berners-Lee
+
+query T
+SELECT name FROM people WHERE age > 30 AND name LIKE 'A%' AND age > 35 ORDER BY name
+----
+Ada Lovelace
+Alan Turing
+
+# Different columns each keep their own interval.
+query T
+SELECT name FROM people WHERE age > 35 AND salary > 150000 AND age > 40 AND salary > 170000 ORDER BY name
+----
+Alan Turing
+Grace Hopper
+Tim Berners-Lee
+
+# An OR is not a conjunction and nothing inside it is touched.
+query T
+SELECT name FROM people WHERE (age > 50 AND age < 30) OR city = 'London' ORDER BY name
+----
+Ada Lovelace
+Alan Turing
+Tim Berners-Lee
+
+# --- through a join ---------------------------------------------------------
+
+query TI
+SELECT a.name, a.age FROM people a JOIN people b ON a.id = b.id
+WHERE a.age > 40 AND a.age > 50 ORDER BY a.name
+----
+Donald Knuth
+61
+Edsger Dijkstra
+52
+Frances Allen
+57
+
+# --- outer join demoted to inner --------------------------------------------
+#
+# The rewrite fires only when a predicate above rejects the padding. These
+# check both directions: the ones that must fire, and the ones that must not
+# because the query is *asking* for the padded rows.
+
+load orders data/orders.csv
+
+query TT rowsort
+SELECT p.name, o.product FROM people p LEFT JOIN orders o ON p.id = o.person_id
+WHERE o.quantity > 1
+----
+Ada Lovelace
+keyboard
+Ada Lovelace
+mouse
+Alan Turing
+mouse
+Barbara Liskov
+monitor
+Frances Allen
+desk
+Grace Hopper
+cable
+Margaret Hamilton
+cable
+
+query TT rowsort
+SELECT p.name, o.product FROM people p LEFT JOIN orders o ON p.id = o.person_id
+WHERE o.product LIKE 'l%'
+----
+Ada Lovelace
+laptop
+Tim Berners-Lee
+laptop
+
+query TT rowsort
+SELECT p.name, o.product FROM people p LEFT JOIN orders o ON p.id = o.person_id
+WHERE o.quantity BETWEEN 2 AND 4
+----
+Ada Lovelace
+keyboard
+Ada Lovelace
+mouse
+Alan Turing
+mouse
+Barbara Liskov
+monitor
+Frances Allen
+desk
+
+# Must NOT fire: this is how an anti-join is written, and demoting the join
+# would return nothing at all.
+query T rowsort
+SELECT p.name FROM people p LEFT JOIN orders o ON p.id = o.person_id
+WHERE o.product IS NULL
+----
+Donald Knuth
+Edsger Dijkstra
+
+# Must NOT fire: a disjunction can be true on a padded row.
+query T rowsort
+SELECT p.name FROM people p LEFT JOIN orders o ON p.id = o.person_id
+WHERE o.quantity > 1 OR p.age > 50
+----
+Ada Lovelace
+Ada Lovelace
+Alan Turing
+Barbara Liskov
+Donald Knuth
+Edsger Dijkstra
+Frances Allen
+Grace Hopper
+Margaret Hamilton
+
+# A conjunction rejects if either half does, so this one fires.
+query T rowsort
+SELECT p.name FROM people p LEFT JOIN orders o ON p.id = o.person_id
+WHERE p.age > 30 AND o.quantity > 2
+----
+Ada Lovelace
+Grace Hopper
+Margaret Hamilton
+
+# A predicate only on the preserved side changes nothing about the padding.
+query I
+SELECT COUNT(*) FROM people p LEFT JOIN orders o ON p.id = o.person_id WHERE p.age > 45
+----
+4
+
+# RIGHT joins are the mirror image.
+query TT rowsort
+SELECT p.name, o.product FROM orders o RIGHT JOIN people p ON p.id = o.person_id
+WHERE o.quantity > 2
+----
+Ada Lovelace
+mouse
+Grace Hopper
+cable
+Margaret Hamilton
+cable
+
+query T rowsort
+SELECT p.name FROM orders o RIGHT JOIN people p ON p.id = o.person_id
+WHERE o.product IS NULL
+----
+Donald Knuth
+Edsger Dijkstra
+
+# A FULL join with one side rejected keeps the other side's preservation.
+query I
+SELECT COUNT(*) FROM people p FULL JOIN orders o ON p.id = o.person_id WHERE o.quantity > 1
+----
+7
+
+query I
+SELECT COUNT(*) FROM people p FULL JOIN orders o ON p.id = o.person_id
+WHERE o.quantity > 1 AND p.age > 30
+----
+7
+
+query I
+SELECT COUNT(*) FROM people p FULL JOIN orders o ON p.id = o.person_id
+WHERE o.product IS NULL OR p.name IS NULL
+----
+2
