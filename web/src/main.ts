@@ -587,7 +587,7 @@ function renderPipeline(stats: StatsInfo) {
   const header = document.createElement("div");
   header.className = "op";
   header.innerHTML =
-    '<div class="op-name" style="color:var(--dim)">operator</div>' +
+    '<div class="op-name" class="dim">operator</div>' +
     '<div class="op-num">rows out</div><div class="op-num">estimated</div><div class="op-num">time</div>';
   body.appendChild(header);
 
@@ -736,9 +736,9 @@ function renderAst(parsed: ParseInfo) {
 function renderPlan(planned: PlanInfo) {
   const body = $("tab-plan");
   body.innerHTML =
-    `<h4 style="color:var(--dim);font-size:.7rem;margin:0 0 .4rem">OPTIMIZED PLAN</h4><pre>${escapeHtml(planned.optimized)}</pre>` +
-    `<h4 style="color:var(--dim);font-size:.7rem;margin:1.2rem 0 .4rem">WITH RESOLVED TYPES</h4><pre>${escapeHtml(planned.typed)}</pre>` +
-    `<h4 style="color:var(--dim);font-size:.7rem;margin:1.2rem 0 .4rem">AS BOUND, BEFORE ANY REWRITE</h4><pre>${escapeHtml(planned.bound)}</pre>`;
+    `<h4 class="plan-label">Optimized</h4><pre>${escapeHtml(planned.optimized)}</pre>` +
+    `<h4 class="plan-label">With resolved types</h4><pre>${escapeHtml(planned.typed)}</pre>` +
+    `<h4 class="plan-label">As bound, before any rewrite</h4><pre>${escapeHtml(planned.bound)}</pre>`;
 }
 
 /**
@@ -950,7 +950,7 @@ async function renderStorage(table: string) {
       const rows = rg.columns
         .map(
           (c) =>
-            `<tr><td>${escapeHtml(c.name)}</td><td style="color:var(--dim)">${escapeHtml(c.type.toLowerCase())}</td>` +
+            `<tr><td>${escapeHtml(c.name)}</td><td class="dim">${escapeHtml(c.type.toLowerCase())}</td>` +
             `<td>${c.min === null ? "—" : escapeHtml(c.min)}</td><td>${c.max === null ? "—" : escapeHtml(c.max)}</td>` +
             `<td class="num">${c.nulls === null ? "?" : c.nulls}</td>` +
             `<td class="num">${c.distinct === null ? "&gt;8192" : c.distinct}</td>` +
@@ -968,7 +968,7 @@ async function renderStorage(table: string) {
         `<span><b>row group ${i}</b> · ${rg.rows.toLocaleString()} rows · ${humanBytes(rg.bytes)}` +
         verdictChip(verdicts[i]) +
         `</span>` +
-        `<span style="color:var(--dim)">${rg.resident === null ? "resident" : `${rg.resident}/${rg.columns.length} columns decoded`}</span></div>` +
+        `<span class="dim">${rg.resident === null ? "resident" : `${rg.resident}/${rg.columns.length} columns decoded`}</span></div>` +
         `<table class="zone"><thead><tr><th>column</th><th>type</th><th>min</th><th>max</th><th>nulls</th><th>distinct</th><th>encoding</th><th></th></tr></thead>` +
         `<tbody>${rows}</tbody></table></div>`
       );
@@ -1218,18 +1218,77 @@ interface Example {
   watch: string;
 }
 
-/** The output panels, in the order the pipeline produces them. */
-const TABS = [
-  "results",
-  "tokens",
-  "ast",
-  "plan",
-  "trace",
-  "physical",
-  "pipeline",
-  "storage",
-  "index",
+/**
+ * The output panels, in the order the pipeline produces them, each with the
+ * caption printed under its figure.
+ *
+ * The caption says what the stage *is*, once, in a sentence. The margin note
+ * beside the query says what to look for in it for this particular query --
+ * two different jobs, which is why they are two different pieces of text.
+ */
+const TABS: { id: string; plate: string; caption: string }[] = [
+  {
+    id: "results",
+    plate: "Fig. 1",
+    caption:
+      "The answer. Columns cross out of wasm memory as typed arrays rather than JSON, which is why a million-row result costs no more to hand over than a hundred.",
+  },
+  {
+    id: "tokens",
+    plate: "Fig. 2",
+    caption:
+      "The lexer's output. Every token carries the byte offset it was read from — point at one and the editor underlines exactly those characters.",
+  },
+  {
+    id: "ast",
+    plate: "Fig. 3",
+    caption:
+      "The parse tree, before any name has been resolved. Fold a branch to read the shape of the statement rather than its detail.",
+  },
+  {
+    id: "plan",
+    plate: "Fig. 4",
+    caption:
+      "Relational algebra. The binder has resolved every name against the catalog and given every expression a type and a nullability.",
+  },
+  {
+    id: "trace",
+    plate: "Fig. 5",
+    caption:
+      "Every rewrite the optimizer made, one at a time, before and after. The lines it changed are ruled in the margin; the rest of the plan stayed where it was.",
+  },
+  {
+    id: "physical",
+    plate: "Fig. 6",
+    caption:
+      "The operators chosen to run the plan, each with the reason it was chosen over the alternative — hash against merge, full sort against a bounded heap.",
+  },
+  {
+    id: "pipeline",
+    plate: "Fig. 7",
+    caption:
+      "Execution. Rows in and out of every operator, its exclusive share of the time, and what the optimizer predicted beside what actually happened.",
+  },
+  {
+    id: "storage",
+    plate: "Fig. 8",
+    caption:
+      "The columns on disk: row groups, the zone map that lets a scan skip one unread, the encoding each column is held in, and what the last query touched.",
+  },
+  {
+    id: "index",
+    plate: "Fig. 9",
+    caption:
+      "A B+ tree, level by level, and the path a probe takes down it. Values live only in the leaves; everything above routes.",
+  },
 ];
+
+/** Print the caption for the stage now on show. */
+function showPlate(id: string) {
+  const tab = TABS.find((t) => t.id === id);
+  if (!tab) return;
+  $("plate-caption").innerHTML = `<b>${tab.plate}</b>${escapeHtml(tab.caption)}`;
+}
 
 const EXAMPLES: Example[] = [
   {
@@ -1426,13 +1485,15 @@ async function boot() {
   // schema for `lang-sql` to complete qualified names against.
   editor.refreshSchema();
 
+  showPlate("results");
   $("run").addEventListener("click", run);
   for (const tab of document.querySelectorAll<HTMLElement>(".tab")) {
     tab.addEventListener("click", () => {
       document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
-      for (const name of TABS) {
-        $(`tab-${name}`).hidden = name !== tab.dataset.tab;
+      for (const { id } of TABS) {
+        $(`tab-${id}`).hidden = id !== tab.dataset.tab;
       }
+      if (tab.dataset.tab) showPlate(tab.dataset.tab);
       // Built when opened rather than after every query: neither depends on the
       // last result, and drawing a tree nobody is looking at is waste.
       if (tab.dataset.tab === "storage") void renderStorage(storageTable);
@@ -1453,12 +1514,15 @@ function renderCatalog() {
   $("catalog").innerHTML = tables
     .map(
       (t) =>
-        `<div class="tablecard" data-name="${escapeHtml(t.name)}"><b>${escapeHtml(t.name)}</b> ` +
-        `<span>${t.rows.toLocaleString()} rows · ${t.columns.length} cols · ${t.row_groups} row group${t.row_groups === 1 ? "" : "s"}` +
+        `<div class="tablecard" data-name="${escapeHtml(t.name)}">` +
+        `<b>${escapeHtml(t.name)}</b>` +
+        `<span class="shape">${t.rows.toLocaleString()} rows · ${t.columns.length} columns · ` +
+        `${t.row_groups} row group${t.row_groups === 1 ? "" : "s"}` +
         (t.pending ? " · lazily decoded" : "") +
-        `</span><br><span>${t.columns
-          .map((c) => `${escapeHtml(c.name)} ${c.type.toLowerCase()}`)
-          .join(", ")}</span></div>`
+        `</span>` +
+        `<span class="cols">${t.columns
+          .map((c) => `${escapeHtml(c.name)} <span class="dim">${c.type.toLowerCase()}</span>`)
+          .join("  ·  ")}</span></div>`
     )
     .join("");
   for (const card of document.querySelectorAll<HTMLElement>(".tablecard")) {

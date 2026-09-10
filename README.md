@@ -958,6 +958,30 @@ else. `SITE_BASE` decides the path the assets are written under, because
 GitHub Pages serves this repository from `/<repo>/` and a base baked in at
 compile time would break the local build.
 
+### The page is printed matter
+
+Everything above the boundary is a document, not a console. The argument the
+project makes is that a query engine should be *legible*, and a page that
+argues that in a terminal palette is arguing it in the wrong voice -- so this
+one is set on paper: warm ivory, ink, hairline rules, and figures with
+captions. Each stage of the pipeline is a numbered plate, and the engine's own
+output is the illustration.
+
+Two colours carry meaning and nothing else does. **Ink blue** is structure: a
+keyword, a rewritten line, the node a rule fired at, the path a probe took down
+a tree. **Vermilion** is a warning: an estimate off by more than 10x, a row
+group skipped, a query that did not bind. Everything else is ink at varying
+strength, which is what leaves the two colours anything to say.
+
+The optimizer trace is where the idiom pays for itself. A rewritten line is
+marked with a rule in the margin rather than struck through with a highlighter,
+which is how a proof is corrected and how a plan stays readable while you are
+being shown what changed about it.
+
+Fraunces sets the display, Newsreader the prose, DM Mono everything the engine
+wrote. The type is doing the work that a dark background and a glow usually get
+asked to do.
+
 ### The editor
 
 CodeMirror 6, for the three things a `<textarea>` cannot do.

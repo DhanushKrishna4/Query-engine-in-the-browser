@@ -3,70 +3,242 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>query engine in the browser</title>
-<link rel="stylesheet" href="style.css">
+<title>A query engine in the browser</title>
+<meta name="description" content="A SQL engine written from scratch in Rust, compiled to WebAssembly. Every stage of the query is on the page: tokens, parse tree, plan, every optimizer rewrite, and the operators as they run.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;1,6..72,400&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./style.css">
 </head>
 <body>
-<header>
-  <h1>query engine <span class="dim">in the browser</span></h1>
-  <p class="sub">A SQL engine written from scratch in Rust, compiled to WebAssembly.
-     No server: the parser, the optimizer and the operators all run in this tab.</p>
+
+<!-- The grain sits behind everything and is the only decorative element on the
+     page. Inline so it costs no request and cannot flash in late. -->
+<svg class="grain" aria-hidden="true"><filter id="paper"><feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="4"/></filter><rect width="100%" height="100%" filter="url(#paper)"/></svg>
+
+<header class="masthead">
+  <p class="colophon">Rust <span>·</span> WebAssembly <span>·</span> SIMD128 <span>·</span> no server</p>
+  <h1>A query engine<br><em>in the browser</em></h1>
+  <div class="lede">
+    <div class="lede-prose">
+      <p class="standfirst">
+        A SQL engine written from scratch — lexer, parser, binder, cost-based
+        optimizer, vectorized operators, and a Parquet reader — compiled to
+        WebAssembly. It runs in this tab, over seven million rows, with nothing
+        behind it.
+      </p>
+      <p class="standfirst dek">
+        Databases answer questions and never show their working. This one shows
+        all of it: the tokens, the parse tree, the plan as bound, <em>every</em>
+        rewrite the optimizer makes, the operators it chose and why, and the
+        rows moving through them as the query runs.
+      </p>
+    </div>
+
+    <dl class="figures">
+      <div><dt>7,433,139</dt><dd>rows in one Parquet file, queried here</dd></div>
+      <div><dt>1,066</dt><dd>queries answered by SQLite and compared</dd></div>
+      <div><dt>0</dt><dd>dependencies in the engine crate</dd></div>
+      <div><dt>12,252</dt><dd>SIMD instructions in the shipped module</dd></div>
+    </dl>
+  </div>
+
+  <p class="byline" id="build"></p>
 </header>
 
+<!-- The frontispiece: the project's whole argument as one figure. A predicate
+     starts above a join and ends up inside it, which is the rewrite the trace
+     panel further down will show you happening to your own query. Drawn rather
+     than screenshotted so it stays sharp and weighs nothing. -->
+<figure class="frontispiece">
+  <svg viewBox="0 0 1000 232" role="img" aria-label="A query plan before and after predicate pushdown: the filter moves from above the join to inside its left side.">
+    <g class="plate-label">
+      <text x="115" y="12">BEFORE</text>
+      <text x="675" y="12">AFTER</text>
+    </g>
+
+    <!-- before -->
+    <g class="edges">
+      <path d="M190 58 V78"/>
+      <path d="M190 110 V130"/>
+      <path d="M190 162 V174 H115 V186"/>
+      <path d="M190 162 V174 H265 V186"/>
+    </g>
+    <g class="nodes">
+      <rect x="135" y="30" width="110" height="28" rx="2"/>
+      <text x="190" y="48">Project</text>
+
+      <rect class="moved" x="135" y="82" width="110" height="28" rx="2"/>
+      <text class="moved-text" x="190" y="100">Filter</text>
+
+      <rect x="135" y="134" width="110" height="28" rx="2"/>
+      <text x="190" y="152">Join</text>
+
+      <rect x="70" y="186" width="90" height="28" rx="2"/>
+      <text x="115" y="204">Scan</text>
+      <rect x="220" y="186" width="90" height="28" rx="2"/>
+      <text x="265" y="204">Scan</text>
+    </g>
+
+    <!-- the rewrite -->
+    <g class="arrow">
+      <path d="M350 122 H600"/>
+      <path d="M600 122 l-9 -4.5 v9 z"/>
+      <text x="475" y="112">predicate pushdown</text>
+      <text class="sub" x="475" y="140">the join now builds from the rows that survive</text>
+    </g>
+
+    <!-- after -->
+    <g class="edges">
+      <path d="M780 58 V78"/>
+      <path d="M780 110 V122 H700 V134"/>
+      <path d="M780 110 V122 H865 V134"/>
+      <path d="M700 162 V186"/>
+    </g>
+    <g class="nodes">
+      <rect x="725" y="30" width="110" height="28" rx="2"/>
+      <text x="780" y="48">Project</text>
+
+      <rect x="725" y="82" width="110" height="28" rx="2"/>
+      <text x="780" y="100">Join</text>
+
+      <rect class="moved" x="650" y="134" width="100" height="28" rx="2"/>
+      <text class="moved-text" x="700" y="152">Filter</text>
+
+      <rect x="820" y="134" width="90" height="28" rx="2"/>
+      <text x="865" y="152">Scan</text>
+
+      <rect x="655" y="186" width="90" height="28" rx="2"/>
+      <text x="700" y="204">Scan</text>
+    </g>
+  </svg>
+  <figcaption>
+    <b>Frontispiece</b> One rewrite, of eleven. Every stage below is the engine's
+    own output on whatever you type — nothing here is a mock-up.
+  </figcaption>
+</figure>
+
+
 <main>
-  <section class="panel" id="catalog-panel">
-    <div class="panel-head">
-      <h2>tables</h2>
-      <span class="hint" id="load-status">loading…</span>
+
+  <section class="chapter" id="catalog-panel">
+    <div class="chapter-head">
+      <span class="numeral">I</span>
+      <h2>The tables</h2>
+      <span class="chapter-note" id="load-status">loading…</span>
     </div>
     <div id="catalog" class="catalog"></div>
     <div id="collections" class="collections"></div>
   </section>
 
-  <section class="panel">
-    <div class="panel-head">
-      <h2>query</h2>
-      <span class="hint">⌘/Ctrl + Enter to run</span>
+  <section class="chapter">
+    <div class="chapter-head">
+      <span class="numeral">II</span>
+      <h2>The query</h2>
+      <span class="chapter-note">⌘ / Ctrl + Enter to run</span>
     </div>
-    <div id="editor"></div>
-    <div class="row">
-      <button id="run" class="primary">Run</button>
-      <select id="examples" aria-label="example queries"></select>
-      <button id="share" title="put this query in a shareable link">Share</button>
-      <span id="share-status" class="hint"></span>
-      <span id="timing" class="timing"></span>
+
+    <div class="query-block">
+      <div id="editor"></div>
+      <div class="controls">
+        <button id="run" class="primary">Run</button>
+        <select id="examples" aria-label="example queries"></select>
+        <button id="share" title="put this query in a shareable link">Share</button>
+        <span id="share-status" class="hint"></span>
+        <span id="timing" class="timing"></span>
+      </div>
     </div>
-    <p class="watch" id="watch"></p>
+    <p class="marginalia" id="watch"></p>
   </section>
 
-  <section class="panel" id="output">
-    <nav class="tabs" role="tablist">
-      <button class="tab active" data-tab="results">results</button>
-      <button class="tab" data-tab="tokens">tokens</button>
-      <button class="tab" data-tab="ast">AST</button>
-      <button class="tab" data-tab="plan">bound plan</button>
-      <button class="tab" data-tab="trace">optimizer trace</button>
-      <button class="tab" data-tab="physical">physical plan</button>
-      <button class="tab" data-tab="pipeline">execution</button>
-      <button class="tab" data-tab="storage">storage</button>
-      <button class="tab" data-tab="index">index</button>
+  <section class="chapter" id="output">
+    <div class="chapter-head">
+      <span class="numeral">III</span>
+      <h2>The pipeline</h2>
+      <span class="chapter-note">one stage per figure</span>
+    </div>
+
+    <nav class="tabs" role="tablist" aria-label="pipeline stages">
+      <button class="tab active" data-tab="results"><i>1</i>results</button>
+      <button class="tab" data-tab="tokens"><i>2</i>tokens</button>
+      <button class="tab" data-tab="ast"><i>3</i>parse tree</button>
+      <button class="tab" data-tab="plan"><i>4</i>bound plan</button>
+      <button class="tab" data-tab="trace"><i>5</i>optimizer trace</button>
+      <button class="tab" data-tab="physical"><i>6</i>physical plan</button>
+      <button class="tab" data-tab="pipeline"><i>7</i>execution</button>
+      <button class="tab" data-tab="storage"><i>8</i>storage</button>
+      <button class="tab" data-tab="index"><i>9</i>index</button>
     </nav>
+
     <div id="error" class="error" hidden></div>
-    <div class="tab-body" id="tab-results"></div>
-    <div class="tab-body" id="tab-tokens" hidden></div>
-    <div class="tab-body" id="tab-ast" hidden></div>
-    <div class="tab-body" id="tab-plan" hidden></div>
-    <div class="tab-body" id="tab-trace" hidden></div>
-    <div class="tab-body" id="tab-physical" hidden></div>
-    <div class="tab-body" id="tab-pipeline" hidden></div>
-    <div class="tab-body" id="tab-storage" hidden></div>
-    <div class="tab-body" id="tab-index" hidden></div>
+
+    <figure class="plate">
+      <div class="tab-body" id="tab-results"></div>
+      <div class="tab-body" id="tab-tokens" hidden></div>
+      <div class="tab-body" id="tab-ast" hidden></div>
+      <div class="tab-body" id="tab-plan" hidden></div>
+      <div class="tab-body" id="tab-trace" hidden></div>
+      <div class="tab-body" id="tab-physical" hidden></div>
+      <div class="tab-body" id="tab-pipeline" hidden></div>
+      <div class="tab-body" id="tab-storage" hidden></div>
+      <div class="tab-body" id="tab-index" hidden></div>
+      <figcaption id="plate-caption"></figcaption>
+    </figure>
   </section>
+
+  <section class="chapter">
+    <div class="chapter-head">
+      <span class="numeral">IV</span>
+      <h2>How it is known to be right</h2>
+      <span class="chapter-note">the part that took longest</span>
+    </div>
+
+    <div class="columns">
+      <article>
+        <h3>Answered twice</h3>
+        <p>
+          Every query in a 1,066-record corpus is put to this engine and to
+          SQLite, and the answers compared. A semantic bug — three-valued NULL
+          logic, <code>NOT IN</code> over a nullable subquery, an outer join's
+          padding — shows up as a disagreement rather than as something nobody
+          noticed.
+        </p>
+      </article>
+      <article>
+        <h3>Every fast path has a slow one</h3>
+        <p>
+          The same corpus runs eight ways: vectorized against scalar, hash join
+          against merge, pruning on against off, index scan against full scan,
+          optimizer on against off. All eight must agree. A rewrite that changes
+          an answer fails the build — which is the definition of
+          semantics-preserving, made checkable.
+        </p>
+      </article>
+      <article>
+        <h3>Random tables, not just random queries</h3>
+        <p>
+          Property tests generate the data as well as the SQL: small tables, a
+          fifth of the cells NULL, joins and subqueries over them, run with the
+          optimizer on and off. Four hundred thousand cases. The shrinking is
+          the point — a failure arrives as the smallest table and query that
+          still reproduce it.
+        </p>
+      </article>
+    </div>
+  </section>
+
 </main>
 
 <footer>
-  <span id="build"></span>
-  &nbsp;&middot;&nbsp; <a href="bench.html" style="color:var(--accent)">benchmark against sql.js &rarr;</a>
+  <p>
+    Written from scratch: no SQL parser, no query engine, no dataframe library,
+    no Arrow. The engine crate has <em>zero</em> dependencies and CI fails the
+    build if one appears.
+  </p>
+  <p class="links">
+    <a href="bench.html">Benchmark against SQLite &rarr;</a>
+    <a href="https://github.com/DhanushKrishna4/Query-engine-in-the-browser">Source &rarr;</a>
+  </p>
 </footer>
 
 <script type="module" src="./src/main.ts"></script>

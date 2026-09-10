@@ -28,6 +28,8 @@ import { sql, SQLite } from "@codemirror/lang-sql";
 import { linter, type Diagnostic, lintGutter } from "@codemirror/lint";
 import { Compartment, EditorState, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, EditorView, keymap, placeholder, type DecorationSet } from "@codemirror/view";
+import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { tags as t } from "@lezer/highlight";
 import { basicSetup } from "codemirror";
 import { defaultKeymap } from "@codemirror/commands";
 
@@ -140,6 +142,7 @@ export class SqlEditor {
             ...defaultKeymap,
           ]),
           theme,
+          syntaxHighlighting(inkHighlight),
         ],
       }),
     });
@@ -249,34 +252,72 @@ export class SqlEditor {
   }
 }
 
-/** Matches the page's palette rather than CodeMirror's default light theme. */
+/**
+ * SQL set in ink on paper.
+ *
+ * CodeMirror ships a light default, but its greys and blues are its own; this
+ * borrows the page's two meaningful colours and nothing else. Keywords take the
+ * spot colour because they are the structure of the statement, literals take a
+ * warmer ink so data reads as data, and everything else is plain text.
+ */
 const theme = EditorView.theme(
   {
-    "&": { backgroundColor: "transparent", color: "var(--fg)", fontSize: "0.85rem" },
-    ".cm-content": { fontFamily: "var(--mono)", caretColor: "var(--accent)" },
+    "&": { backgroundColor: "transparent", color: "var(--ink)", fontSize: "0.86rem" },
+    ".cm-content": {
+      fontFamily: "var(--mono)",
+      caretColor: "var(--spot)",
+      padding: "0.5rem 0",
+      lineHeight: "1.7",
+    },
     ".cm-gutters": {
       backgroundColor: "transparent",
-      color: "var(--dim)",
+      color: "var(--rule)",
       border: "none",
+      fontFamily: "var(--mono)",
+      fontSize: "0.7rem",
+      paddingRight: "0.6rem",
     },
-    ".cm-activeLine": { backgroundColor: "rgba(255,255,255,.03)" },
+    ".cm-activeLine": { backgroundColor: "rgba(27, 63, 160, .035)" },
+    ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--ink-faint)" },
     ".cm-token-highlight": {
-      backgroundColor: "var(--accent-dim)",
-      outline: "1px solid var(--accent)",
+      backgroundColor: "var(--spot-wash)",
+      outline: "1px solid var(--spot)",
       borderRadius: "2px",
     },
-    ".cm-activeLineGutter": { backgroundColor: "transparent" },
     "&.cm-focused": { outline: "none" },
-    ".cm-selectionBackground, ::selection": { backgroundColor: "var(--accent-dim) !important" },
+    ".cm-selectionBackground, ::selection": { backgroundColor: "var(--spot-wash) !important" },
+    ".cm-cursor": { borderLeftColor: "var(--spot)", borderLeftWidth: "2px" },
     ".cm-tooltip": {
-      backgroundColor: "#12151c",
-      border: "1px solid var(--line)",
-      color: "var(--fg)",
+      backgroundColor: "#fbf9f5",
+      border: "1px solid var(--rule)",
+      borderRadius: "2px",
+      color: "var(--ink)",
+      fontFamily: "var(--mono)",
+      fontSize: "0.78rem",
+      boxShadow: "0 6px 20px rgba(22, 19, 15, .1)",
     },
+    ".cm-tooltip-autocomplete ul li": { padding: "0.15rem 0.5rem" },
     ".cm-tooltip-autocomplete ul li[aria-selected]": {
-      backgroundColor: "var(--accent-dim)",
-      color: "var(--fg)",
+      backgroundColor: "var(--spot-wash)",
+      color: "var(--ink)",
     },
+    ".cm-completionDetail": { color: "var(--ink-faint)", fontStyle: "normal", marginLeft: "1rem" },
+    ".cm-lintRange-error": { backgroundImage: "none", borderBottom: "2px solid var(--signal)" },
+    ".cm-diagnostic-error": { borderLeftColor: "var(--signal)" },
   },
-  { dark: true }
+  { dark: false }
 );
+
+/** Ink, the spot colour for structure, and a warmer ink for data. */
+const inkHighlight = HighlightStyle.define([
+  { tag: t.keyword, color: "var(--spot)", fontWeight: "500" },
+  { tag: [t.operatorKeyword, t.modifier], color: "var(--spot)" },
+  { tag: [t.string, t.special(t.string)], color: "#7a4a1e" },
+  { tag: t.number, color: "#7a4a1e" },
+  { tag: [t.bool, t.null], color: "var(--spot)", fontStyle: "italic" },
+  { tag: t.comment, color: "var(--ink-faint)", fontStyle: "italic" },
+  { tag: [t.function(t.variableName), t.function(t.propertyName)], color: "var(--ink)" },
+  { tag: t.operator, color: "var(--ink-soft)" },
+  { tag: t.punctuation, color: "var(--ink-faint)" },
+  { tag: t.typeName, color: "var(--spot)" },
+]);

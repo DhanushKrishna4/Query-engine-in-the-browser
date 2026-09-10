@@ -430,7 +430,7 @@ function render(r: Report) {
     const theirs = x.theirs!;
     const measurable = x.ours >= CLOCK_RESOLUTION_MS && theirs >= CLOCK_RESOLUTION_MS;
     const ratio = theirs / x.ours;
-    const colour = ratio >= 1 ? "var(--accent)" : "var(--warn)";
+    const colour = ratio >= 1 ? "var(--spot)" : "var(--ink-faint)";
     const verdict = measurable
       ? '<td class="num" style="color:' + colour + '">' + ratio.toFixed(2) + "x</td>"
       : '<td class="num null" title="below what performance.now() can measure">too fast</td>';
@@ -448,7 +448,7 @@ function render(r: Report) {
     '<table><thead><tr><th>query</th><th class="num">this engine</th><th class="num">sql.js</th>' +
     '<th class="num">ratio</th><th class="num">rows</th><th>agreed</th></tr></thead><tbody>' +
     r.results.map(rowHtml).join("") +
-    '<tr><td colspan="6" style="padding-top:.8rem;color:var(--dim)">— with an index on <code>id</code> in both engines —</td></tr>' +
+    '<tr><td colspan="6" class="dim" style="padding-top:.9rem">— with an index on <code>id</code> in both engines —</td></tr>' +
     r.indexed.map(rowHtml).join("") +
     "</tbody></table>";
   $("method").textContent = r.count.toLocaleString() + " rows, min of " + r.runs;
@@ -474,8 +474,8 @@ function render(r: Report) {
     "time. Point lookups favour a B-tree, and once SQLite has an index on <code>id</code> it answers them " +
     "without touching the table at all.</p>" +
     (disagreed.length === 0
-      ? '<p style="color:var(--accent)">Every query returned identical results from both engines.</p>'
-      : '<p style="color:var(--error)">' + disagreed.length + " query result(s) differed: " +
+      ? '<p class="agreed">Every query returned identical results from both engines.</p>'
+      : '<p class="disagreed">' + disagreed.length + " query result(s) differed: " +
         disagreed.map((d) => esc(d.label)).join(", ") +
         ". A timing means nothing without this line saying no.</p>");
   $("notes-panel").hidden = false;
