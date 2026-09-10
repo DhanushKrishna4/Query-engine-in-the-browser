@@ -172,7 +172,7 @@ let wasm: { memory: WebAssembly.Memory };
 let engine: QueryEngine;
 let db: SqlJsDatabase | null = null;
 
-type Outcome = ReturnType<QueryEngine["query"]>;
+type Outcome = ReturnType<QueryEngine["execute"]>;
 
 /** A result column, as views onto wasm memory. See `main.ts` for why `any`. */
 interface ColumnView {
@@ -237,7 +237,7 @@ function readOurs(outcome: Outcome, meta: { columns: unknown[] }): unknown[][] {
 }
 
 function runOurs(sql: string): unknown[][] {
-  const outcome = engine.query(sql);
+  const outcome = engine.execute(sql);
   return readOurs(outcome, JSON.parse(outcome.meta));
 }
 

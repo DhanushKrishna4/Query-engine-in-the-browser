@@ -21,6 +21,41 @@ pub enum Keyword {
 }
 
 impl Keyword {
+    /// Whether this word may also be used as an identifier.
+    ///
+    /// The type names are keywords only because `CAST(x AS DATE)` needs them
+    /// to be, and they appear nowhere else in the grammar -- so a column
+    /// called `date` or `text` or `precision` is unambiguous everywhere an
+    /// identifier is expected. Real data has such columns, and making people
+    /// quote them is a parser limitation leaking into the query.
+    ///
+    /// Everything else stays reserved. `SELECT select FROM from` is not worth
+    /// the ambiguity, and the standard reserves those words too.
+    pub fn is_non_reserved(self) -> bool {
+        use Keyword::*;
+        matches!(
+            self,
+            Bigint
+                | Boolean
+                | Char
+                | Date
+                | Decimal
+                | Double
+                | Float
+                | Int
+                | Integer
+                | Numeric
+                | Precision
+                | Real
+                | Smallint
+                | Text
+                | Timestamp
+                | Varchar
+        )
+    }
+}
+
+impl Keyword {
     /// SQL keywords are case-insensitive, so lookup folds to uppercase first.
     /// Not `FromStr`: a non-keyword word is an identifier, not an error.
     pub fn lookup(s: &str) -> Option<Keyword> {

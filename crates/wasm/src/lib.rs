@@ -612,13 +612,19 @@ struct TokenInfo {
     end: usize,
 }
 
+/// What `parse` returns: the two stages before any name is resolved.
 #[derive(Serialize)]
-struct ExplainInfo {
+struct ParseInfo {
     tokens: Vec<TokenInfo>,
     /// The parse tree as `ast::pretty` writes it: two spaces per level, one
     /// node per line. The page reads the indentation back into a tree, which
     /// is why the format is worth stating here as well as there.
     ast: String,
+}
+
+/// What `plan` returns: everything from binding onwards.
+#[derive(Serialize)]
+struct PlanInfo {
     bound: String,
     optimized: String,
     typed: String,
@@ -652,12 +658,34 @@ impl QueryEngine {
         Ok(self.describe(&table))
     }
 
+    pub(crate) fn load_csv_inner(&mut self, name: &str, bytes: &[u8]) -> Result<String, String> {
+        let table = self
+            .inner
+            .load_csv(name, bytes, &CsvOptions::default())
+            .map_err(|d| d.headline())?;
+        Ok(self.describe(&table))
+    }
+
+    pub(crate) fn load_parquet_inner(
+        &mut self,
+        name: &str,
+        bytes: Vec<u8>,
+    ) -> Result<String, String> {
+        let table = self
+            .inner
+            .load_parquet(name, bytes.into())
+            .map_err(|d| d.headline())?;
+        Ok(self.describe(&table))
+    }
+
     pub(crate) fn query_inner(&mut self, sql: &str) -> Result<QueryOutcome, String> {
         let result = self.inner.execute(sql).map_err(|d| d.render(sql))?;
         Ok(build_outcome(&result))
     }
 
-    pub(crate) fn explain_inner(&self, sql: &str) -> Result<String, String> {
+    /// Lexer and parser only. Cheap: it stops before the binder, so a page
+    /// can show the tokens and the parse tree for a query that does not bind.
+    pub(crate) fn parse_inner(&self, sql: &str) -> Result<String, String> {
         let tokens = self
             .inner
             .tokenize(sql)
@@ -674,13 +702,21 @@ impl QueryEngine {
             })
             .collect();
         let ast = self.inner.parse(sql).map_err(|d| d.render(sql))?;
+        let info = ParseInfo {
+            tokens,
+            ast: engine::parser::ast::pretty(&ast),
+        };
+        serde_json::to_string(&info).map_err(|e| e.to_string())
+    }
+
+    /// The logical plan as bound, as optimized, and every rewrite between the
+    /// two with the subtree each one fired at.
+    pub(crate) fn plan_inner(&self, sql: &str) -> Result<String, String> {
         let bound = self.inner.bound_plan(sql).map_err(|d| d.render(sql))?;
         let optimized = self.inner.plan(sql).map_err(|d| d.render(sql))?;
         let trace = self.inner.optimizer_trace(sql).map_err(|d| d.render(sql))?;
 
-        let info = ExplainInfo {
-            tokens,
-            ast: engine::parser::ast::pretty(&ast),
+        let info = PlanInfo {
             bound: engine::plan::explain(&bound, false),
             optimized: engine::plan::explain(&optimized, false),
             typed: engine::plan::explain(&optimized, true),
@@ -907,11 +943,29 @@ impl QueryEngine {
 
     /// Register a buffer as a table, choosing CSV or Parquet by its first
     /// bytes. The page fetches these; nothing here does any I/O.
+    ///
+    /// Sniffing rather than trusting a file name: a `.csv` served as Parquet
+    /// is a wrong answer, and the first four bytes are `PAR1` or they are not.
+    /// `loadCsv` and `loadParquet` are there for a caller that already knows
+    /// and would rather be told when the bytes disagree.
     pub fn load(&mut self, name: &str, bytes: Vec<u8>) -> Result<String, JsValue> {
         self.load_inner(name, bytes).map_err(js)
     }
 
-    pub fn tables(&self) -> String {
+    /// Register a buffer as CSV, whatever it looks like.
+    #[wasm_bindgen(js_name = loadCsv)]
+    pub fn load_csv(&mut self, name: &str, bytes: Vec<u8>) -> Result<String, JsValue> {
+        self.load_csv_inner(name, &bytes).map_err(js)
+    }
+
+    /// Register a buffer as Parquet, whatever it looks like.
+    #[wasm_bindgen(js_name = loadParquet)]
+    pub fn load_parquet(&mut self, name: &str, bytes: Vec<u8>) -> Result<String, JsValue> {
+        self.load_parquet_inner(name, bytes).map_err(js)
+    }
+
+    /// Every table, with its columns, row groups and indexes.
+    pub fn catalog(&self) -> String {
         self.tables_inner()
     }
 
@@ -934,8 +988,13 @@ impl QueryEngine {
     }
 
     /// Run a query and keep its columns in wasm memory.
-    pub fn query(&mut self, sql: &str) -> Result<QueryOutcome, JsValue> {
+    pub fn execute(&mut self, sql: &str) -> Result<QueryOutcome, JsValue> {
         self.query_inner(sql).map_err(js)
+    }
+
+    /// The lexer's tokens and the parse tree, without binding anything.
+    pub fn parse(&self, sql: &str) -> Result<String, JsValue> {
+        self.parse_inner(sql).map_err(js)
     }
 
     /// Parse and bind without running, reporting where an error points.
@@ -958,7 +1017,8 @@ impl QueryEngine {
 
     /// Start a query without draining it, so the page can pull batches and
     /// show progress between them.
-    pub fn stream(&mut self, sql: &str) -> Result<QueryProgress, JsValue> {
+    #[wasm_bindgen(js_name = executeStreaming)]
+    pub fn execute_streaming(&mut self, sql: &str) -> Result<QueryProgress, JsValue> {
         let stream = self
             .inner
             .execute_streaming(sql)
@@ -970,10 +1030,10 @@ impl QueryEngine {
         })
     }
 
-    /// Every stage of the pipeline, for the plan panels: tokens, parse tree,
-    /// the plan as bound, the optimized plan, and each rewrite in between.
-    pub fn explain(&self, sql: &str) -> Result<String, JsValue> {
-        self.explain_inner(sql).map_err(js)
+    /// The logical plan as bound, as optimized, and every rewrite between the
+    /// two with the subtree each one fired at.
+    pub fn plan(&self, sql: &str) -> Result<String, JsValue> {
+        self.plan_inner(sql).map_err(js)
     }
 
     #[wasm_bindgen(js_name = createIndex)]

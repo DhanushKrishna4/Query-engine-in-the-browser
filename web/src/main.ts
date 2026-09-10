@@ -7,7 +7,6 @@ import wasmUrl from "../pkg/qe_bg.wasm?url";
 import { SqlEditor, type SpanError } from "./editor";
 import type {
   CheckInfo,
-  ExplainInfo,
   IndexInfo,
   OutcomeMeta,
   PhysicalNode,
@@ -15,13 +14,15 @@ import type {
   StatsInfo,
   StorageInfo,
   GroupVerdict,
+  ParseInfo,
+  PlanInfo,
   TableInfo,
   TokenInfo,
   TreeNodeInfo,
   TraceStep,
 } from "./types";
 
-type Outcome = ReturnType<QueryEngine["query"]>;
+type Outcome = ReturnType<QueryEngine["execute"]>;
 
 /** The wasm module's exports, for reading typed arrays out of its memory. */
 let wasm: { memory: WebAssembly.Memory };
@@ -595,10 +596,10 @@ function renderPipeline(stats: StatsInfo) {
  * view: seeing that `<=` is one token and `< =` is two, that a quoted
  * identifier is not a keyword, that whitespace left no trace.
  */
-function renderTokens(explain: ExplainInfo) {
+function renderTokens(parsed: ParseInfo) {
   const body = $("tab-tokens");
   // The EOF token has an empty span and nothing to show for it.
-  const tokens = explain.tokens.filter((t) => t.kind !== "Eof");
+  const tokens = parsed.tokens.filter((t) => t.kind !== "Eof");
   body.innerHTML =
     `<p class="empty" style="margin:0 0 .8rem">${tokens.length} token${tokens.length === 1 ? "" : "s"}. ` +
     `Hover one to see where it came from.</p>` +
@@ -628,9 +629,9 @@ function tokenKind(token: TokenInfo): string {
  * from Rust keeps one description of the AST rather than two that can drift --
  * and that one is already pinned by the parser's snapshot tests.
  */
-function renderAst(explain: ExplainInfo) {
+function renderAst(parsed: ParseInfo) {
   const body = $("tab-ast");
-  const lines = explain.ast.split("\n").filter((l) => l.trim() !== "");
+  const lines = parsed.ast.split("\n").filter((l) => l.trim() !== "");
 
   interface AstNode {
     label: string;
@@ -662,12 +663,12 @@ function renderAst(explain: ExplainInfo) {
   body.innerHTML = `<ul class="ast">${root.children.map((c) => draw(c, 0)).join("")}</ul>`;
 }
 
-function renderPlan(explain: ExplainInfo) {
+function renderPlan(planned: PlanInfo) {
   const body = $("tab-plan");
   body.innerHTML =
-    `<h4 style="color:var(--dim);font-size:.7rem;margin:0 0 .4rem">OPTIMIZED PLAN</h4><pre>${escapeHtml(explain.optimized)}</pre>` +
-    `<h4 style="color:var(--dim);font-size:.7rem;margin:1.2rem 0 .4rem">WITH RESOLVED TYPES</h4><pre>${escapeHtml(explain.typed)}</pre>` +
-    `<h4 style="color:var(--dim);font-size:.7rem;margin:1.2rem 0 .4rem">AS BOUND, BEFORE ANY REWRITE</h4><pre>${escapeHtml(explain.bound)}</pre>`;
+    `<h4 style="color:var(--dim);font-size:.7rem;margin:0 0 .4rem">OPTIMIZED PLAN</h4><pre>${escapeHtml(planned.optimized)}</pre>` +
+    `<h4 style="color:var(--dim);font-size:.7rem;margin:1.2rem 0 .4rem">WITH RESOLVED TYPES</h4><pre>${escapeHtml(planned.typed)}</pre>` +
+    `<h4 style="color:var(--dim);font-size:.7rem;margin:1.2rem 0 .4rem">AS BOUND, BEFORE ANY REWRITE</h4><pre>${escapeHtml(planned.bound)}</pre>`;
 }
 
 /**
@@ -743,9 +744,9 @@ function renderPlanTree(root: PlanNode, target: number): string {
  * Each step names the node the rule fired at, so the subtree it touched is
  * highlighted rather than left to be found by diffing two blocks of text.
  */
-function renderTrace(explain: ExplainInfo) {
+function renderTrace(planned: PlanInfo) {
   const body = $("tab-trace");
-  traceSteps = explain.steps;
+  traceSteps = planned.steps;
   if (traceSteps.length === 0) {
     body.innerHTML = '<p class="empty">the optimizer changed nothing — this plan was already in its final form</p>';
     return;
@@ -894,7 +895,7 @@ function renderStorage(table: string) {
 }
 
 function tableSwitcher(current: string, onPick: (name: string) => void): string {
-  const tables = JSON.parse(engine.tables()) as TableInfo[];
+  const tables = JSON.parse(engine.catalog()) as TableInfo[];
   const id = `switch-${Math.random().toString(36).slice(2)}`;
   setTimeout(() => {
     const select = document.getElementById(id) as HTMLSelectElement | null;
@@ -927,7 +928,7 @@ function tableSwitcher(current: string, onPick: (name: string) => void): string 
  */
 function renderIndex() {
   const body = $("tab-index");
-  const tables = JSON.parse(engine.tables()) as TableInfo[];
+  const tables = JSON.parse(engine.catalog()) as TableInfo[];
   const indexed = tables.flatMap((t) =>
     t.indexes.map((c) => ({ table: t.name, column: c }))
   );
@@ -1281,7 +1282,7 @@ async function boot() {
       };
     },
     tables: () =>
-      (JSON.parse(engine.tables()) as TableInfo[]).map((t) => ({
+      (JSON.parse(engine.catalog()) as TableInfo[]).map((t) => ({
         name: t.name,
         columns: t.columns.map((c) => ({ name: c.name, type: c.type })),
       })),
@@ -1340,7 +1341,7 @@ async function boot() {
 }
 
 function renderCatalog() {
-  const tables = JSON.parse(engine.tables()) as TableInfo[];
+  const tables = JSON.parse(engine.catalog()) as TableInfo[];
   $("catalog").innerHTML = tables
     .map(
       (t) =>
@@ -1408,7 +1409,7 @@ async function loadCollection(collection: Collection, button: HTMLButtonElement)
 
   try {
     // Noted before the load, so a replaced table can be named afterwards.
-    const existing = (JSON.parse(engine.tables()) as TableInfo[]).map((t) => t.name);
+    const existing = (JSON.parse(engine.catalog()) as TableInfo[]).map((t) => t.name);
     const db = await openDb();
     for (const [i, table] of collection.tables.entries()) {
       const of =
@@ -1516,7 +1517,7 @@ async function runQuery() {
   $<HTMLButtonElement>("run").disabled = true;
 
   try {
-    const biggest = (JSON.parse(engine.tables()) as TableInfo[]).reduce(
+    const biggest = (JSON.parse(engine.catalog()) as TableInfo[]).reduce(
       (n, t) => Math.max(n, t.rows),
       0
     );
@@ -1528,11 +1529,14 @@ async function runQuery() {
       `${meta.num_rows.toLocaleString()} row${meta.num_rows === 1 ? "" : "s"} in ${meta.elapsed_ms.toFixed(3)} ms`;
 
     try {
-      const explain = JSON.parse(engine.explain(sql));
-      renderTokens(explain);
-      renderAst(explain);
-      renderPlan(explain);
-      renderTrace(explain);
+      // Two calls, because they are two stages: `parse` stops before the
+      // binder and `plan` runs the optimizer.
+      const parsed = JSON.parse(engine.parse(sql)) as ParseInfo;
+      renderTokens(parsed);
+      renderAst(parsed);
+      const planned = JSON.parse(engine.plan(sql)) as PlanInfo;
+      renderPlan(planned);
+      renderTrace(planned);
       renderPhysical(sql);
     } catch {
       // A query can execute and still not re-plan (it cannot, in practice) --
@@ -1552,7 +1556,7 @@ async function runQuery() {
 
 /** The whole result at once: one call, one render. */
 function runWhole(sql: string): OutcomeMeta {
-  const outcome = engine.query(sql);
+  const outcome = engine.execute(sql);
   const meta = JSON.parse(outcome.meta) as OutcomeMeta;
   renderResults(outcome, meta);
   return meta;
@@ -1570,7 +1574,7 @@ async function runStreaming(sql: string): Promise<OutcomeMeta | null> {
   body.textContent = "";
   const timing = $("timing");
 
-  const progress = engine.stream(sql);
+  const progress = engine.executeStreaming(sql);
   let table: HTMLTableElement | null = null;
   let shown = 0;
   let total = 0;

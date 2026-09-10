@@ -298,6 +298,35 @@ fn typed_literals_carry_their_type() {
 }
 
 #[test]
+fn type_names_are_usable_as_identifiers() {
+    // Real data has columns called `date` and `text`. They are keywords here
+    // only because `CAST(x AS DATE)` needs them to be, and they appear nowhere
+    // else in the grammar -- so requiring quotes would be this parser's
+    // limitation showing up in someone's query.
+    let mut e = Engine::new();
+    e.load(
+        "readings",
+        b"date,text,real\n2020-01-01,hello,2.5\n2021-06-02,world,3.5\n".to_vec(),
+        &CsvOptions::default(),
+    )
+    .unwrap();
+
+    assert_eq!(run(&e, "SELECT text FROM readings"), vec![vec!["hello"], vec!["world"]]);
+    assert_eq!(one(&e, "SELECT COUNT(*) FROM readings r WHERE r.date > DATE '2020-06-01'"), "1");
+    // As an alias, a grouping key and a sort key.
+    assert_eq!(
+        run(&e, "SELECT date AS timestamp FROM readings GROUP BY date ORDER BY date"),
+        vec![vec!["2020-01-01"], vec!["2021-06-02"]]
+    );
+    // And the quoted form still means the same thing.
+    assert_eq!(one(&e, r#"SELECT COUNT("date") FROM readings"#), "2");
+
+    // Reserved words are still reserved: this is a curated list, not a
+    // free-for-all.
+    assert!(err(&e, "SELECT select FROM readings").contains("unexpected"));
+}
+
+#[test]
 fn implicit_numeric_widening() {
     let e = engine();
     // age is INT32, score is FLOAT64; comparing them widens to FLOAT64.

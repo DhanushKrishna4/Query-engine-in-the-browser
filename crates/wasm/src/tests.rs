@@ -224,14 +224,18 @@ fn errors_arrive_rendered_with_their_caret() {
 }
 
 #[test]
-fn explain_returns_every_stage() {
+fn parse_and_plan_return_every_stage() {
     let e = engine();
-    let json = e
-        .explain("SELECT name FROM t WHERE score > 8 ORDER BY name LIMIT 1")
-        .unwrap();
-    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let sql = "SELECT name FROM t WHERE score > 8 ORDER BY name LIMIT 1";
+
+    // `parse` stops before the binder: tokens and the parse tree, nothing that
+    // needs a catalog.
+    let v: serde_json::Value = serde_json::from_str(&e.parse(sql).unwrap()).unwrap();
     assert!(!v["tokens"].as_array().unwrap().is_empty());
     assert!(v["ast"].as_str().unwrap().contains("Select"));
+
+    let json = e.plan(sql).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert!(v["bound"].as_str().unwrap().contains("Filter"));
     assert!(v["optimized"].as_str().unwrap().contains("Scan"));
     // The typed rendering annotates every leaf with its resolved type.
@@ -250,7 +254,7 @@ fn explain_returns_every_stage() {
 
     // A join does give predicate pushdown something to move.
     let json = e
-        .explain_inner("SELECT a.name FROM t a JOIN t b ON a.id = b.id WHERE a.score > 8")
+        .plan_inner("SELECT a.name FROM t a JOIN t b ON a.id = b.id WHERE a.score > 8")
         .unwrap();
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     let rules: Vec<String> = v["steps"]
@@ -306,7 +310,7 @@ fn the_trace_names_the_node_each_rule_fired_at() {
     // which only works if the step says where it happened.
     let e = engine();
     let json = e
-        .explain_inner("SELECT a.name FROM t a JOIN t b ON a.id = b.id WHERE a.score > 8")
+        .plan_inner("SELECT a.name FROM t a JOIN t b ON a.id = b.id WHERE a.score > 8")
         .unwrap();
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     let steps = v["steps"].as_array().unwrap();
@@ -494,7 +498,7 @@ fn a_stream_reports_progress_as_it_goes() {
         .load_csv("big", csv.as_bytes(), &CsvOptions::default())
         .unwrap();
 
-    let mut progress = e.stream("SELECT n FROM big").unwrap();
+    let mut progress = e.execute_streaming("SELECT n FROM big").unwrap();
     let first = progress.next().unwrap().expect("a first chunk");
     assert!(first.len(0) > 0);
 
@@ -508,4 +512,37 @@ fn a_stream_reports_progress_as_it_goes() {
     let p: serde_json::Value = serde_json::from_str(&progress.progress()).unwrap();
     assert_eq!(p["rows"], 5000);
     assert_eq!(p["done"], true);
+}
+
+/// The exports the spec names, present under those names.
+///
+/// `load` sniffs the format, which is strictly more useful; the explicit pair
+/// exists so a caller who already knows is told when the bytes disagree with
+/// them, rather than being quietly handed the other reader.
+#[test]
+fn the_loaders_can_be_named_explicitly() {
+    let mut e = QueryEngine::new();
+    e.load_csv_inner("c", b"a,b\n1,2\n").unwrap();
+    let v: serde_json::Value = serde_json::from_str(&e.tables_inner()).unwrap();
+    assert_eq!(v[0]["name"], "c");
+    assert_eq!(v[0]["rows"], 1);
+
+    // CSV bytes handed to the Parquet reader are refused by name, not guessed.
+    let wrong = e.load_parquet_inner("p", b"a,b\n1,2\n".to_vec()).unwrap_err();
+    assert!(wrong.contains("Parquet"), "{wrong}");
+}
+
+/// `parse` must work on a query that does not bind: it stops before the
+/// catalog is consulted, which is what makes it useful for a tokens panel
+/// while someone is still typing.
+#[test]
+fn parse_does_not_need_the_query_to_bind() {
+    let e = engine();
+    let json = e.parse_inner("SELECT nosuchcolumn FROM nosuchtable").unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(v["ast"].as_str().unwrap().contains("Table nosuchtable"));
+    // Whereas planning it is an error, with the caret the terminal would show.
+    let text = e.plan_inner("SELECT nosuchcolumn FROM nosuchtable").unwrap_err();
+    assert!(text.contains("no such table `nosuchtable`"), "{text}");
+    assert!(text.contains('^'), "{text}");
 }

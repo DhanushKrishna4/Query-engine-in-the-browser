@@ -78,10 +78,15 @@ export interface TokenInfo {
   end: number;
 }
 
-export interface ExplainInfo {
+/** What `parse` returns: the two stages before any name is resolved. */
+export interface ParseInfo {
   tokens: TokenInfo[];
   /** `ast::pretty` output: two spaces per level, one node per line. */
   ast: string;
+}
+
+/** What `plan` returns: everything from binding onwards. */
+export interface PlanInfo {
   bound: string;
   optimized: string;
   typed: string;

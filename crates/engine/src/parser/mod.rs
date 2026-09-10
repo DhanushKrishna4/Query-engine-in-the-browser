@@ -544,6 +544,17 @@ impl Parser {
                 let t = self.advance();
                 Ok(Ident { value: t.text, quoted: true, span: t.span })
             }
+            // A type name where an identifier belongs is an identifier. `DATE`
+            // is a keyword only so that `CAST(x AS DATE)` parses, and a column
+            // really called `date` is common enough in real data that making
+            // it a quoting problem is the parser leaking into the query.
+            //
+            // Unquoted, so it still folds to lowercase for lookup like any
+            // other bare name.
+            TokenKind::Keyword(kw) if kw.is_non_reserved() => {
+                let t = self.advance();
+                Ok(Ident { value: t.text, quoted: false, span: t.span })
+            }
             _ => Err(self.unexpected(&["identifier".to_string()])),
         }
     }
@@ -809,6 +820,11 @@ impl Parser {
             TokenKind::Keyword(Keyword::Cast) => self.parse_cast(),
             TokenKind::Keyword(Keyword::Exists) => self.parse_exists(false),
             TokenKind::Ident | TokenKind::QuotedIdent => self.parse_ident_expr(),
+            // A bare type name in a value position: a column called `date`,
+            // or `t.text`. The `DATE '...'` arm above already claimed the case
+            // where a string literal follows, so anything reaching here is a
+            // name. See `Keyword::is_non_reserved`.
+            TokenKind::Keyword(kw) if kw.is_non_reserved() => self.parse_ident_expr(),
             _ => Err(self.unexpected(&[
                 "identifier".into(),
                 "literal".into(),
