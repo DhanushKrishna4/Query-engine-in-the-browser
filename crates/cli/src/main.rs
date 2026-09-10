@@ -209,6 +209,7 @@ commands:
   .ast <sql>             parse tree
   .bound <sql>           logical plan as the binder produced it
   .plan <sql>            optimized logical plan, with resolved types
+  .physical <sql>        chosen operators and why, without running the query
   .trace <sql>           every optimizer rewrite, step by step
   .stats on|off          show per-operator counters after each query
   .timing on|off         show query wall time (default on)
@@ -320,6 +321,7 @@ impl Repl {
             ".ast" => return self.cmd_ast(rest),
             ".bound" => return self.cmd_bound(rest),
             ".plan" => return self.cmd_plan(rest),
+            ".physical" => return self.cmd_physical(rest),
             ".trace" => return self.cmd_trace(rest),
             ".stats" => self.show_stats = parse_toggle(rest, self.show_stats),
             ".timing" => self.show_timing = parse_toggle(rest, self.show_timing),
@@ -588,6 +590,20 @@ impl Repl {
 
     /// The optimizer trace: one complete plan per rule application. This is
     /// what the browser UI's trace slider steps through.
+    /// The physical plan, without running anything.
+    fn cmd_physical(&self, sql: &str) -> Result<(), ()> {
+        match self.engine.physical_plan(sql) {
+            Ok(stats) => {
+                print!("{}", engine::exec::explain_physical(&stats));
+                Ok(())
+            }
+            Err(d) => {
+                eprintln!("{}", d.render(sql));
+                Err(())
+            }
+        }
+    }
+
     fn cmd_trace(&self, sql: &str) -> Result<(), ()> {
         match self.engine.optimizer_trace(sql) {
             Ok(t) => {

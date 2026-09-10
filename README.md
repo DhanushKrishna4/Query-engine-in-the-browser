@@ -956,6 +956,7 @@ than added for a UI:
 | --- | --- |
 | **results** | the grid, read out of wasm memory |
 | **plan** | the optimized plan, the same plan with every leaf's resolved type, and the plan as the binder produced it |
+| **physical plan** | which operator was chosen at each node, and *why* that one |
 | **pipeline** | the operator tree with rows in and out, each node's *exclusive* share of the time as a bar, the batches it handed upward, row groups read versus pruned, and the estimate beside reality with its q-error |
 | **optimizer trace** | a slider over the rewrites, one at a time, with the subtree the rule fired at highlighted in both plans |
 | **storage** | every row group's zone map, bloom filters, and -- for a Parquet table -- how many of its columns have actually been decoded |
@@ -1062,6 +1063,60 @@ order on both sides.
 - **The index visualizer samples wide levels.** Panning and zooming a full tree
   is a different piece of software; this draws a faithful sample with the path
   intact and says how many nodes it stood in for.
+
+## The physical plan, and why
+
+`Engine::physical_plan` builds the operator tree without running it, so the
+reasons it reports are the ones execution would act on:
+
+```text
+qe> .physical SELECT b.region, COUNT(*) FROM trips t
+      JOIN boroughs b ON t.pickup_borough = b.borough
+      WHERE t.fare > 45 GROUP BY b.region ORDER BY 1 LIMIT 2
+
+Limit  est=2 rows
+  -> TopN  est=2 rows
+       why: bounded heap of 2: a LIMIT sits directly above this sort, so only
+            that many rows can matter and the rest need never be ordered
+    -> HashAggregate  est=3 rows
+         why: hash table over 1 group key(s): the input does not arrive sorted
+              on them, so streaming would have to sort first
+      -> HashJoin  est=5 rows
+           why: hash join over 1 equality key(s): the inputs are not sorted on
+                them, so a merge would have to sort first. Build side
+                estimated at 5 rows
+        -> Scan  est=1000000 rows
+             why: full scan: no index on any column the predicate constrains
+```
+
+A reason is attached where the choice is *made*, and only where there was one:
+a projection has no alternative, so it states none. That distinction matters --
+an operator with no stated reason and an operator that defaulted silently look
+the same otherwise.
+
+Rendered without row counts or timings, deliberately. Nothing has run, so those
+are all zero, and a plan showing `rows=0` throughout reads like a query that
+returned nothing.
+
+## Results a batch at a time
+
+`Engine::execute_streaming` hands back the operator tree instead of draining it,
+so a caller can pull one batch, paint, and pull the next. On a million rows the
+difference is a frozen tab and a row count that climbs.
+
+```js
+const progress = engine.stream("SELECT n FROM big");
+let out;
+while ((out = progress.next()) !== undefined) {
+  render(out);                        // the same typed-array views as a whole result
+  const p = JSON.parse(progress.progress);   // {rows, batches, done, elapsed_ms}
+}
+```
+
+Each chunk is a `QueryOutcome` in its own right, read exactly like a complete
+result. The statistics are readable partway through and describe the rows that
+have flowed so far, which is what makes a progress indicator honest rather than
+a spinner.
 
 ## Column encodings
 
@@ -1844,6 +1899,9 @@ group and got compacted every time. That alone cost 2x.
   changes.
 - **No multi-column statistics.** Correlated predicates are the largest source
   of estimation error and nothing here addresses them.
+- **Streaming has no cancellation.** A caller can stop pulling, but the
+  operator tree stays alive until it is dropped; there is no way to tell a
+  running scan to stop early.
 - **Encoded predicates prove emptiness, not membership.** An encoding can say
   no row in a group matches; it cannot hand back which rows do, because the
   narrowing version measured 3x slower than decoding. Making it pay would mean
@@ -1918,7 +1976,7 @@ group and got compacted every time. That alone cost 2x.
 
 ## Testing
 
-`cargo test` -- 343 tests plus a 1,066-record sqllogictest corpus, every query of
+`cargo test` -- 347 tests plus a 1,066-record sqllogictest corpus, every query of
 which is additionally run seven ways and compared, run a second time against
 Parquet-backed tables, and scored for estimation accuracy.
 

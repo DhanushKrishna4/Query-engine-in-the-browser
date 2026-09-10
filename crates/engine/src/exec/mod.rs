@@ -59,6 +59,13 @@ pub struct OperatorStats {
     pub name: String,
     /// One-line description of what this instance does, e.g. the predicate.
     pub detail: String,
+    /// Why this implementation was chosen over the alternatives.
+    ///
+    /// Set where the choice is actually made, and only where there *was* a
+    /// choice -- a projection has no alternative, so it has no reason. The
+    /// physical plan is a list of decisions, and a decision with no stated
+    /// reason is indistinguishable from a default.
+    pub reason: Option<String>,
     pub rows_in: u64,
     pub rows_out: u64,
     pub batches_out: u64,
@@ -96,6 +103,11 @@ impl OperatorStats {
             detail,
             ..Default::default()
         }
+    }
+
+    /// Record why this implementation was picked.
+    pub fn because(&mut self, reason: impl Into<String>) {
+        self.reason = Some(reason.into());
     }
 
     fn record_output(&mut self, batch: &Batch) {
@@ -202,6 +214,10 @@ pub trait Operator {
 
     /// Record the optimizer's prediction for this operator.
     fn set_estimated_rows(&mut self, _rows: f64) {}
+
+    /// Record why this implementation was chosen. Ignored by operators that
+    /// had no alternative.
+    fn set_reason(&mut self, _reason: String) {}
 
     /// Mutable access to child `i`, so estimates can be attached after the tree
     /// is built. `None` for a leaf or an out-of-range index.
@@ -490,6 +506,10 @@ impl Operator for OneRowExec {
         self.stats.estimated_rows = Some(rows);
     }
 
+    fn set_reason(&mut self, reason: String) {
+        self.stats.because(reason);
+    }
+
     fn schema(&self) -> Arc<Schema> {
         Arc::clone(&self.schema)
     }
@@ -688,6 +708,10 @@ impl Operator for ScanExec {
         self.stats.estimated_rows = Some(rows);
     }
 
+    fn set_reason(&mut self, reason: String) {
+        self.stats.because(reason);
+    }
+
     fn schema(&self) -> Arc<Schema> {
         Arc::clone(&self.schema)
     }
@@ -827,6 +851,10 @@ impl Operator for FilterExec {
         self.stats.estimated_rows = Some(rows);
     }
 
+    fn set_reason(&mut self, reason: String) {
+        self.stats.because(reason);
+    }
+
     fn child_mut(&mut self, index: usize) -> Option<&mut dyn Operator> {
         match index {
             0 => Some(self.input.as_mut()),
@@ -933,6 +961,10 @@ impl Operator for ProjectExec {
         self.stats.estimated_rows = Some(rows);
     }
 
+    fn set_reason(&mut self, reason: String) {
+        self.stats.because(reason);
+    }
+
     fn child_mut(&mut self, index: usize) -> Option<&mut dyn Operator> {
         match index {
             0 => Some(self.input.as_mut()),
@@ -1019,6 +1051,10 @@ impl Operator for LimitExec {
 
     fn set_estimated_rows(&mut self, rows: f64) {
         self.stats.estimated_rows = Some(rows);
+    }
+
+    fn set_reason(&mut self, reason: String) {
+        self.stats.because(reason);
     }
 
     fn child_mut(&mut self, index: usize) -> Option<&mut dyn Operator> {
@@ -1174,10 +1210,21 @@ fn index_scan(
     }
 
     let (rows, idx, range) = best?;
-    Some(Box::new(
-        IndexScanExec::new(Arc::clone(table), rows, &idx.column_name, &range)
-            .with_batch_size(options.batch_size)
-            .with_projection(projection.clone(), Arc::clone(schema)),
+    let why = format!(
+        "index scan: the B+ tree on {}.{} names {} row(s), under the {:.0}% of the table \
+         above which gathering loses to a sequential pass",
+        idx.table,
+        idx.column_name,
+        rows.len(),
+        index::MAX_INDEX_SELECTIVITY * 100.0
+    );
+    Some(because(
+        Box::new(
+            IndexScanExec::new(Arc::clone(table), rows, &idx.column_name, &range)
+                .with_batch_size(options.batch_size)
+                .with_projection(projection.clone(), Arc::clone(schema)),
+        ),
+        why,
     ))
 }
 
@@ -1255,7 +1302,15 @@ fn build_node(
                             if !options.zone_map_pruning {
                                 scan = scan.without_zone_maps();
                             }
-                            Box::new(scan) as Box<dyn Operator>
+                            let why = if catalog.indexes_on(table_name).is_empty() {
+                                "full scan: no index on any column the predicate constrains"
+                                    .to_string()
+                            } else {
+                                "full scan: an index exists but names too much of the table \
+                                 to beat a sequential pass"
+                                    .to_string()
+                            };
+                            because(Box::new(scan) as Box<dyn Operator>, why)
                         }
                     }
                 }
@@ -1295,13 +1350,20 @@ fn build_node(
                     })
                     .collect::<Result<Vec<_>>>()?;
                 let schema = sorted.schema();
-                let top = TopNExec::new(
-                    build_node(sorted, catalog, options, estimates, ctes)?,
-                    compiled,
-                    schema,
-                    skip + fetch,
+                let wanted = skip + fetch;
+                let top = because(
+                    Box::new(TopNExec::new(
+                        build_node(sorted, catalog, options, estimates, ctes)?,
+                        compiled,
+                        schema,
+                        wanted,
+                    )),
+                    format!(
+                        "bounded heap of {wanted}: a LIMIT sits directly above this sort, so \
+                         only that many rows can matter and the rest need never be ordered"
+                    ),
                 );
-                return Ok(Box::new(LimitExec::new(Box::new(top), *skip, Some(*fetch))));
+                return Ok(Box::new(LimitExec::new(top, *skip, Some(*fetch))));
             }
             Box::new(LimitExec::new(
                 build_node(input, catalog, options, estimates, ctes)?,
@@ -1323,11 +1385,14 @@ fn build_node(
                 })
                 .collect::<Result<Vec<_>>>()?;
             let schema = input.schema();
-            Box::new(SortExec::new(
-                build_node(input, catalog, options, estimates, ctes)?,
-                compiled,
-                schema,
-            ))
+            because(
+                Box::new(SortExec::new(
+                    build_node(input, catalog, options, estimates, ctes)?,
+                    compiled,
+                    schema,
+                )),
+                "full sort: no LIMIT above it, so every row has to be ordered".to_string(),
+            )
         }
 
         LogicalPlan::Distinct { input, .. } => Box::new(DistinctExec::new(build_node(
@@ -1437,6 +1502,15 @@ fn build_node(
                 .collect::<Option<Vec<_>>>()
                 .is_some_and(|cols| ordering::satisfies(&ordering::orderings(input), &cols));
 
+            let why = if forced {
+                "streaming: forced, so the input is sorted on the group keys first".to_string()
+            } else if compiled_groups.is_empty() {
+                "streaming: no GROUP BY, so there is one group and nothing to hash".to_string()
+            } else {
+                "streaming: the input already arrives sorted on the group keys, so one \
+                 accumulator set suffices instead of one per group"
+                    .to_string()
+            };
             if forced || sorted {
                 // With no GROUP BY there is one group and nothing to sort by.
                 let child = if forced && !compiled_groups.is_empty() {
@@ -1444,19 +1518,29 @@ fn build_node(
                 } else {
                     child
                 };
-                Box::new(aggregate::SortAggregateExec::new(
-                    child,
-                    compiled_groups,
-                    compiled_aggs,
-                    Arc::clone(schema),
-                ))
+                because(
+                    Box::new(aggregate::SortAggregateExec::new(
+                        child,
+                        compiled_groups,
+                        compiled_aggs,
+                        Arc::clone(schema),
+                    )),
+                    why,
+                )
             } else {
-                Box::new(HashAggregateExec::new(
-                    child,
-                    compiled_groups,
-                    compiled_aggs,
-                    Arc::clone(schema),
-                ))
+                let groups = compiled_groups.len();
+                because(
+                    Box::new(HashAggregateExec::new(
+                        child,
+                        compiled_groups,
+                        compiled_aggs,
+                        Arc::clone(schema),
+                    )),
+                    format!(
+                        "hash table over {groups} group key(s): the input does not arrive \
+                         sorted on them, so streaming would have to sort first"
+                    ),
+                )
             }
         }
     })
@@ -1498,6 +1582,10 @@ impl MaterializedExec {
 impl Operator for MaterializedExec {
     fn set_estimated_rows(&mut self, rows: f64) {
         self.stats.estimated_rows = Some(rows);
+    }
+
+    fn set_reason(&mut self, reason: String) {
+        self.stats.because(reason);
     }
 
     fn schema(&self) -> Arc<Schema> {
@@ -1580,14 +1668,23 @@ fn build_join(
     };
 
     if equi.is_empty() {
-        return Ok(Box::new(NestedLoopJoinExec::new(
+        let why = match on {
+            Some(_) => "nested loop: the condition yields no equality between the two sides, \
+                        so there is nothing to hash or merge on"
+                .to_string(),
+            None => "nested loop: no join condition, so every pair is a match".to_string(),
+        };
+        return Ok(because(
+            Box::new(NestedLoopJoinExec::new(
             left_op,
             right_op,
             join_type,
             residual,
-            Arc::clone(schema),
-            candidate_schema,
-        )));
+                Arc::clone(schema),
+                candidate_schema,
+            )),
+            why,
+        ));
     }
 
     let mut probe_keys = Vec::with_capacity(equi.len());
@@ -1609,7 +1706,36 @@ fn build_join(
         } else {
             (left_op, right_op)
         };
-        return Ok(Box::new(merge::MergeJoinExec::new(
+        let why = if forced {
+            format!(
+                "sort-merge: forced, so both inputs are sorted on the {} join key(s) first",
+                equi.len()
+            )
+        } else {
+            format!(
+                "merge join: both inputs already arrive sorted on the {} join key(s), \
+                 so neither a hash table nor a sort is needed",
+                equi.len()
+            )
+        };
+        return Ok(because(
+            Box::new(merge::MergeJoinExec::new(
+                left_op,
+                right_op,
+                join_type,
+                probe_keys,
+                build_keys,
+                residual,
+                Arc::clone(schema),
+                candidate_schema,
+            )),
+            why,
+        ));
+    }
+
+    let build_rows = crate::optimizer::stats::estimate_rows(right, catalog);
+    Ok(because(
+        Box::new(HashJoinExec::new(
             left_op,
             right_op,
             join_type,
@@ -1618,19 +1744,13 @@ fn build_join(
             residual,
             Arc::clone(schema),
             candidate_schema,
-        )));
-    }
-
-    Ok(Box::new(HashJoinExec::new(
-        left_op,
-        right_op,
-        join_type,
-        probe_keys,
-        build_keys,
-        residual,
-        Arc::clone(schema),
-        candidate_schema,
-    )))
+        )),
+        format!(
+            "hash join over {} equality key(s): the inputs are not sorted on them, so a merge \
+             would have to sort first. Build side estimated at {build_rows:.0} rows",
+            equi.len()
+        ),
+    ))
 }
 
 /// Whether both inputs already arrive sorted on the join keys, in agreement.
@@ -1857,6 +1977,12 @@ pub struct StatsNode {
     pub children: Vec<StatsNode>,
 }
 
+/// Attach a reason to the operator a choice just produced.
+fn because(mut op: Box<dyn Operator>, reason: String) -> Box<dyn Operator> {
+    op.set_reason(reason);
+    op
+}
+
 pub fn snapshot_stats(op: &dyn Operator) -> StatsNode {
     StatsNode {
         stats: op.stats().clone(),
@@ -1872,6 +1998,37 @@ impl StatsNode {
 
 /// Render the operator tree with its counters. Time is shown as a percentage
 /// of the total so the expensive operator is obvious at a glance.
+/// The physical plan, rendered without the counters.
+///
+/// `explain_stats` reports what happened; this reports what *will* happen, so
+/// it shows the operator, its parameters, why it was chosen and what the
+/// optimizer expects it to produce -- and nothing about rows or time, which
+/// are all zero before the query runs and would read as a query that returned
+/// nothing.
+pub fn explain_physical(root: &StatsNode) -> String {
+    fn write(out: &mut String, node: &StatsNode, depth: usize) {
+        use std::fmt::Write;
+        let pad = "  ".repeat(depth);
+        let _ = write!(out, "{pad}{}{}", if depth > 0 { "-> " } else { "" }, node.stats.name);
+        if let Some(est) = node.stats.estimated_rows {
+            let _ = write!(out, "  est={est:.0} rows");
+        }
+        out.push('\n');
+        if !node.stats.detail.is_empty() {
+            let _ = writeln!(out, "{pad}     {}", node.stats.detail);
+        }
+        if let Some(reason) = &node.stats.reason {
+            let _ = writeln!(out, "{pad}     why: {reason}");
+        }
+        for c in &node.children {
+            write(out, c, depth + 1);
+        }
+    }
+    let mut out = String::new();
+    write(&mut out, root, 0);
+    out
+}
+
 pub fn explain_stats(root: &StatsNode) -> String {
     let total = root.total_nanos().max(1);
     let mut out = String::new();
@@ -1917,6 +2074,11 @@ fn write_stats(out: &mut String, node: &StatsNode, depth: usize, total: u64) {
     }
     if !s.detail.is_empty() {
         let _ = write!(out, "\n{}     {}", "  ".repeat(depth), s.detail);
+    }
+    if let Some(reason) = &s.reason {
+        // Why this implementation and not another. Only operators that had a
+        // choice carry one.
+        let _ = write!(out, "\n{}     why: {reason}", "  ".repeat(depth));
     }
     out.push('\n');
     for c in &node.children {

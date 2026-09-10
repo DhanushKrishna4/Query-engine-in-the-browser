@@ -399,3 +399,113 @@ fn the_index_visualizer_reports_the_traversal_path() {
     assert!(v["path"].as_array().unwrap().is_empty());
     assert!(v["matched"].is_null());
 }
+
+#[test]
+fn the_physical_plan_says_which_operator_and_why() {
+    let mut e = engine();
+    e.inner
+        .load_csv("u", CSV.as_bytes(), &CsvOptions::default())
+        .unwrap();
+    let json = e
+        .physical_plan_inner("SELECT t.name FROM t JOIN u ON t.id = u.id WHERE t.score > 8")
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+    // Every node names its operator; only the ones that had a choice explain it.
+    fn find<'a>(node: &'a serde_json::Value, name: &str) -> Option<&'a serde_json::Value> {
+        if node["name"] == name {
+            return Some(node);
+        }
+        node["children"].as_array()?.iter().find_map(|c| find(c, name))
+    }
+    let join = find(&v, "HashJoin").expect("a hash join");
+    let why = join["reason"].as_str().expect("a reason");
+    assert!(why.contains("hash join"), "{why}");
+    assert!(why.contains("not sorted"), "{why}");
+    assert!(why.contains("Build side estimated"), "{why}");
+
+    // A projection had no alternative, so it states none.
+    let project = find(&v, "Project").expect("a projection");
+    assert!(project["reason"].is_null(), "{project}");
+
+    // Estimates are populated even though nothing has run.
+    assert!(join["estimated_rows"].is_number());
+}
+
+#[test]
+fn a_sorted_input_changes_both_the_operator_and_the_reason() {
+    let mut e = engine();
+    e.inner
+        .load_csv("u", CSV.as_bytes(), &CsvOptions::default())
+        .unwrap();
+    let json = e
+        .physical_plan_inner(
+            "SELECT a.name FROM (SELECT id, name FROM t ORDER BY id) a \
+             JOIN (SELECT id FROM u ORDER BY id) b ON a.id = b.id",
+        )
+        .unwrap();
+    assert!(json.contains("MergeJoin"), "{json}");
+    assert!(json.contains("already arrive sorted"), "{json}");
+}
+
+#[test]
+fn a_stream_hands_back_the_same_rows_as_a_whole_result() {
+    let mut csv = String::from("n\n");
+    for i in 0..5000 {
+        csv.push_str(&format!("{i}\n"));
+    }
+    let mut e = QueryEngine::new();
+    e.inner
+        .load_csv("big", csv.as_bytes(), &CsvOptions::default())
+        .unwrap();
+
+    let sql = "SELECT n FROM big WHERE n % 3 = 0";
+    let mut progress = e.inner.execute_streaming(sql).unwrap();
+    let mut streamed = Vec::new();
+    let mut chunks = 0;
+    while let Some(batch) = progress.next_batch().unwrap() {
+        chunks += 1;
+        for row in 0..batch.num_rows() {
+            streamed.push(batch.value(0, row).to_string());
+        }
+    }
+    assert!(progress.is_done());
+    assert!(chunks > 1, "5000 rows should arrive in several batches");
+
+    let whole: Vec<String> = e
+        .inner
+        .execute(sql)
+        .unwrap()
+        .rows()
+        .iter()
+        .map(|r| r[0].to_string())
+        .collect();
+    assert_eq!(streamed, whole);
+}
+
+#[test]
+fn a_stream_reports_progress_as_it_goes() {
+    let mut csv = String::from("n\n");
+    for i in 0..5000 {
+        csv.push_str(&format!("{i}\n"));
+    }
+    let mut e = QueryEngine::new();
+    e.inner
+        .load_csv("big", csv.as_bytes(), &CsvOptions::default())
+        .unwrap();
+
+    let mut progress = e.stream("SELECT n FROM big").unwrap();
+    let first = progress.next().unwrap().expect("a first chunk");
+    assert!(first.len(0) > 0);
+
+    let p: serde_json::Value = serde_json::from_str(&progress.progress()).unwrap();
+    assert_eq!(p["batches"], 1);
+    assert!(p["rows"].as_u64().unwrap() > 0);
+    // Partway through, so not finished -- which is the whole point of asking.
+    assert_eq!(p["done"], false);
+
+    while progress.next().unwrap().is_some() {}
+    let p: serde_json::Value = serde_json::from_str(&progress.progress()).unwrap();
+    assert_eq!(p["rows"], 5000);
+    assert_eq!(p["done"], true);
+}

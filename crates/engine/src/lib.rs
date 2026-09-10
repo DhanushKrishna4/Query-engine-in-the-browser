@@ -80,6 +80,59 @@ impl QueryResult {
     }
 }
 
+/// A query in progress, handing back one batch at a time.
+///
+/// Holds the operator tree, so pulling from it is the same work `execute` does
+/// -- just interruptible. The statistics are readable at any point and describe
+/// what has flowed so far, which is what makes a progress indicator possible.
+pub struct QueryStream {
+    root: Box<dyn exec::Operator>,
+    schema: Arc<Schema>,
+    timer: exec::Timer,
+    elapsed_nanos: u64,
+    done: bool,
+}
+
+impl QueryStream {
+    pub fn schema(&self) -> Arc<Schema> {
+        Arc::clone(&self.schema)
+    }
+
+    /// The next batch, or `None` when the query is finished.
+    ///
+    /// Not `next`: this is fallible, so it cannot be `Iterator`, and a method
+    /// that looks like one but is not is worse than a longer name.
+    pub fn next_batch(&mut self) -> Result<Option<Batch>> {
+        if self.done {
+            return Ok(None);
+        }
+        let batch = self.root.next()?;
+        if batch.is_none() {
+            self.done = true;
+            self.elapsed_nanos = self.timer.elapsed_nanos();
+        }
+        Ok(batch)
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.done
+    }
+
+    /// Per-operator counters as they stand right now. Partway through a query
+    /// these describe the rows that have flowed so far, not the whole answer.
+    pub fn stats(&self) -> StatsNode {
+        exec::snapshot_stats(self.root.as_ref())
+    }
+
+    pub fn elapsed_nanos(&self) -> u64 {
+        if self.done {
+            self.elapsed_nanos
+        } else {
+            self.timer.elapsed_nanos()
+        }
+    }
+}
+
 /// The engine: a catalog plus the pipeline that runs against it.
 #[derive(Default)]
 pub struct Engine {
@@ -205,6 +258,53 @@ impl Engine {
         Ok(plan)
     }
 
+    /// The physical plan: which operator was chosen at each node, and why.
+    ///
+    /// Builds the operator tree without running it, so the reasons are exactly
+    /// the ones execution would act on. Row counts are all zero here -- nothing
+    /// has flowed yet -- but the estimates are populated, which is what a plan
+    /// is decided on.
+    pub fn physical_plan(&self, sql: &str) -> Result<exec::StatsNode> {
+        self.physical_plan_with(sql, &exec::ExecOptions::default())
+    }
+
+    pub fn physical_plan_with(
+        &self,
+        sql: &str,
+        options: &exec::ExecOptions,
+    ) -> Result<exec::StatsNode> {
+        let plan = self.optimized_for(sql, options)?;
+        let root = exec::build_with(&plan, &self.catalog, options)?;
+        Ok(exec::snapshot_stats(root.as_ref()))
+    }
+
+    /// Execute, handing back one batch at a time.
+    ///
+    /// The whole-result [`execute`](Self::execute) drains the operator tree
+    /// into a `Vec`; this hands the tree back so a caller can pull batches as
+    /// it wants them and show progress in between. In the browser that is the
+    /// difference between a frozen tab and a row count that climbs.
+    pub fn execute_streaming(&self, sql: &str) -> Result<QueryStream> {
+        self.execute_streaming_with(sql, &exec::ExecOptions::default())
+    }
+
+    pub fn execute_streaming_with(
+        &self,
+        sql: &str,
+        options: &exec::ExecOptions,
+    ) -> Result<QueryStream> {
+        let timer = exec::Timer::start();
+        let plan = self.optimized_for(sql, options)?;
+        let root = exec::build_with(&plan, &self.catalog, options)?;
+        Ok(QueryStream {
+            schema: root.schema(),
+            root,
+            timer,
+            elapsed_nanos: 0,
+            done: false,
+        })
+    }
+
     pub fn execute(&self, sql: &str) -> Result<QueryResult> {
         self.execute_with(sql, &exec::ExecOptions::default())
     }
@@ -212,40 +312,47 @@ impl Engine {
     /// Execute with a specific evaluator and batching configuration. Used by
     /// the benchmark and by the test that demands the scalar and vectorized
     /// evaluators agree on every query.
-    pub fn execute_with(&self, sql: &str, options: &exec::ExecOptions) -> Result<QueryResult> {
-        let timer = exec::Timer::start();
+    /// The plan `options` would run, optimized exactly as execution would do it.
+    ///
+    /// Shared by execution, streaming and the physical plan, so all three
+    /// necessarily agree about what is being run.
+    fn optimized_for(&self, sql: &str, options: &exec::ExecOptions) -> Result<LogicalPlan> {
         let plan = self.bound_plan(sql)?;
         // Even "unoptimized" runs the mandatory rules: a subquery expression
         // has no execution strategy, so something has to remove it.
-        let plan = if options.optimize
+        if options.optimize
             && options.reorder_joins
             && options.decorrelate
             && options.aggregate_pushdown
         {
-            self.optimize(plan, &self.optimizer)?
-        } else {
-            let mut rules: Vec<Box<dyn optimizer::Rule>> = Vec::new();
-            if options.decorrelate {
-                rules.push(Box::new(optimizer::rules::Decorrelate));
+            return self.optimize(plan, &self.optimizer);
+        }
+        let mut rules: Vec<Box<dyn optimizer::Rule>> = Vec::new();
+        if options.decorrelate {
+            rules.push(Box::new(optimizer::rules::Decorrelate));
+        }
+        rules.push(Box::new(optimizer::rules::EvaluateSubqueries));
+        if options.optimize {
+            rules.push(Box::new(optimizer::rules::ConstantFolding));
+            rules.push(Box::new(optimizer::rules::PredicatePushdown));
+            rules.push(Box::new(optimizer::rules::LimitPushdown));
+            rules.push(Box::new(optimizer::rules::PredicateSimplification));
+            rules.push(Box::new(optimizer::rules::OuterToInner));
+            rules.push(Box::new(optimizer::rules::CommonSubexpression));
+            if options.aggregate_pushdown {
+                rules.push(Box::new(optimizer::rules::AggregatePushdown));
             }
-            rules.push(Box::new(optimizer::rules::EvaluateSubqueries));
-            if options.optimize {
-                rules.push(Box::new(optimizer::rules::ConstantFolding));
-                rules.push(Box::new(optimizer::rules::PredicatePushdown));
-                rules.push(Box::new(optimizer::rules::LimitPushdown));
-                rules.push(Box::new(optimizer::rules::PredicateSimplification));
-                rules.push(Box::new(optimizer::rules::OuterToInner));
-                rules.push(Box::new(optimizer::rules::CommonSubexpression));
-                if options.aggregate_pushdown {
-                    rules.push(Box::new(optimizer::rules::AggregatePushdown));
-                }
-                if options.reorder_joins {
-                    rules.push(Box::new(optimizer::rules::JoinReorder));
-                }
-                rules.push(Box::new(optimizer::rules::ProjectionPushdown));
+            if options.reorder_joins {
+                rules.push(Box::new(optimizer::rules::JoinReorder));
             }
-            self.optimize(plan, &Optimizer::with_rules(rules))?
-        };
+            rules.push(Box::new(optimizer::rules::ProjectionPushdown));
+        }
+        self.optimize(plan, &Optimizer::with_rules(rules))
+    }
+
+    pub fn execute_with(&self, sql: &str, options: &exec::ExecOptions) -> Result<QueryResult> {
+        let timer = exec::Timer::start();
+        let plan = self.optimized_for(sql, options)?;
         let mut root = exec::build_with(&plan, &self.catalog, options)?;
         let schema = root.schema();
         let batches = exec::collect(root.as_mut())?;

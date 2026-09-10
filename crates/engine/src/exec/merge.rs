@@ -436,6 +436,10 @@ impl Operator for MergeJoinExec {
         self.stats.estimated_rows = Some(rows);
     }
 
+    fn set_reason(&mut self, reason: String) {
+        self.stats.because(reason);
+    }
+
     fn child_mut(&mut self, index: usize) -> Option<&mut dyn Operator> {
         match index {
             0 => Some(self.left.input.as_mut()),

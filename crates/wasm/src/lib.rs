@@ -160,6 +160,7 @@ struct FieldInfo {
 struct StatsInfo {
     name: String,
     detail: String,
+    reason: Option<String>,
     rows_in: u64,
     rows_out: u64,
     batches: u64,
@@ -175,6 +176,28 @@ struct StatsInfo {
     children: Vec<StatsInfo>,
 }
 
+/// One node of the physical plan: the operator, its parameters, why it was
+/// chosen, and what the optimizer expects it to produce.
+#[derive(Serialize)]
+struct PhysicalNode {
+    name: String,
+    detail: String,
+    /// Present only where there was a choice to make.
+    reason: Option<String>,
+    estimated_rows: Option<f64>,
+    children: Vec<PhysicalNode>,
+}
+
+fn physical_node(node: &StatsNode) -> PhysicalNode {
+    PhysicalNode {
+        name: node.stats.name.clone(),
+        detail: node.stats.detail.clone(),
+        reason: node.stats.reason.clone(),
+        estimated_rows: node.stats.estimated_rows,
+        children: node.children.iter().map(physical_node).collect(),
+    }
+}
+
 fn stats_info(node: &StatsNode) -> StatsInfo {
     let s = &node.stats;
     // The gap between prediction and reality, which is the most informative
@@ -187,6 +210,7 @@ fn stats_info(node: &StatsNode) -> StatsInfo {
     StatsInfo {
         name: s.name.clone(),
         detail: s.detail.clone(),
+        reason: s.reason.clone(),
         rows_in: s.rows_in,
         rows_out: s.rows_out,
         batches: s.batches_out,
@@ -651,6 +675,11 @@ impl QueryEngine {
 
     /// Row groups, their zone maps, their bloom filters, and -- for a lazily
     /// loaded table -- how much of each has actually been decoded.
+    pub(crate) fn physical_plan_inner(&self, sql: &str) -> Result<String, String> {
+        let stats = self.inner.physical_plan(sql).map_err(|d| d.render(sql))?;
+        Ok(serde_json::to_string(&physical_node(&stats)).unwrap_or_else(|_| "{}".into()))
+    }
+
     pub(crate) fn storage_inner(&self, table: &str) -> Result<String, String> {
         let t = self
             .inner
@@ -843,6 +872,29 @@ impl QueryEngine {
         self.query_inner(sql).map_err(js)
     }
 
+    /// The physical plan: which operator was chosen at each node, and why.
+    ///
+    /// Builds the operator tree without running it, so the reasons are the ones
+    /// execution would act on. No row counts -- nothing has flowed yet.
+    #[wasm_bindgen(js_name = physicalPlan)]
+    pub fn physical_plan(&self, sql: &str) -> Result<String, JsValue> {
+        self.physical_plan_inner(sql).map_err(js)
+    }
+
+    /// Start a query without draining it, so the page can pull batches and
+    /// show progress between them.
+    pub fn stream(&mut self, sql: &str) -> Result<QueryProgress, JsValue> {
+        let stream = self
+            .inner
+            .execute_streaming(sql)
+            .map_err(|d| js(d.render(sql)))?;
+        Ok(QueryProgress {
+            stream,
+            rows: 0,
+            batches: 0,
+        })
+    }
+
     /// Every stage of the pipeline, for the plan panels: tokens, parse tree,
     /// the plan as bound, the optimized plan, and each rewrite in between.
     pub fn explain(&self, sql: &str) -> Result<String, JsValue> {
@@ -907,3 +959,54 @@ fn json_string(s: &str) -> String {
 
 #[cfg(test)]
 mod tests;
+
+/// A query being pulled one batch at a time.
+///
+/// The whole-result path builds every column before the page sees anything; on
+/// a million rows that is a frozen tab. This hands back a chunk per call, with
+/// the row count so far, so the page can paint between them.
+#[wasm_bindgen]
+pub struct QueryProgress {
+    stream: engine::QueryStream,
+    rows: usize,
+    batches: usize,
+}
+
+#[wasm_bindgen]
+impl QueryProgress {
+    /// The next chunk, or `undefined` when the query is finished.
+    ///
+    /// Each chunk is a [`QueryOutcome`] of its own, read exactly like a
+    /// complete result -- the same typed-array views over the same memory.
+    ///
+    /// Named `next` deliberately: this crosses into JavaScript, where that is
+    /// what a caller expects to write, and it is not a Rust `Iterator` on
+    /// either side of the boundary.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Result<Option<QueryOutcome>, JsValue> {
+        let Some(batch) = self.stream.next_batch().map_err(|d| js(d.headline()))? else {
+            return Ok(None);
+        };
+        self.rows += batch.num_rows();
+        self.batches += 1;
+        let result = QueryResult {
+            schema: self.stream.schema(),
+            batches: vec![batch],
+            stats: self.stream.stats(),
+            elapsed_nanos: self.stream.elapsed_nanos(),
+        };
+        Ok(Some(build_outcome(&result)))
+    }
+
+    /// Rows handed over so far, and whether there are more.
+    #[wasm_bindgen(getter)]
+    pub fn progress(&self) -> String {
+        format!(
+            "{{\"rows\":{},\"batches\":{},\"done\":{},\"elapsed_ms\":{:.3}}}",
+            self.rows,
+            self.batches,
+            self.stream.is_done(),
+            self.stream.elapsed_nanos() as f64 / 1e6
+        )
+    }
+}

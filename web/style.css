@@ -128,3 +128,13 @@ footer { max-width: 1200px; margin: 2rem auto 0; padding: 0 1.5rem; color: var(-
 .tree-svg text { fill: var(--dim); font: 9px var(--mono); }
 .tree-svg .on-path text, .tree-svg text.on-path { fill: #eafff2; }
 .tree-legend { color: var(--dim); font-size: .76rem; margin-top: .6rem; }
+
+/* --- physical plan --------------------------------------------------------- */
+.phys { font-size: .8rem; line-height: 1.55; }
+.phys-node { white-space: pre-wrap; }
+.phys-op { color: var(--accent); font-weight: 600; }
+.phys-est { color: var(--dim); }
+.phys-detail { color: var(--fg); opacity: .8; }
+/* The reason a choice was made, which is the point of this panel. */
+.phys-why { color: #cdd6a0; }
+.phys-why::before { content: "why: "; color: var(--dim); }

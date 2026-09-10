@@ -211,6 +211,10 @@ impl Operator for SortExec {
         self.stats.estimated_rows = Some(rows);
     }
 
+    fn set_reason(&mut self, reason: String) {
+        self.stats.because(reason);
+    }
+
     fn child_mut(&mut self, index: usize) -> Option<&mut dyn Operator> {
         match index {
             0 => Some(self.input.as_mut()),
@@ -444,6 +448,10 @@ impl TopNExec {
 impl Operator for TopNExec {
     fn set_estimated_rows(&mut self, rows: f64) {
         self.stats.estimated_rows = Some(rows);
+    }
+
+    fn set_reason(&mut self, reason: String) {
+        self.stats.because(reason);
     }
 
     fn child_mut(&mut self, index: usize) -> Option<&mut dyn Operator> {

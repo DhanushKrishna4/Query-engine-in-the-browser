@@ -292,6 +292,45 @@ function renderPlan(explain) {
     `<h4 style="color:var(--dim);font-size:.7rem;margin:1.2rem 0 .4rem">AS BOUND, BEFORE ANY REWRITE</h4><pre>${escapeHtml(explain.bound)}</pre>`;
 }
 
+/**
+ * The physical plan: which operator, and why that one.
+ *
+ * Built without running the query, so this is the decision the engine made
+ * rather than a report of what happened. Nodes that had no alternative -- a
+ * projection, a filter -- state no reason, which is the honest thing for them
+ * to say.
+ */
+function renderPhysical(sql) {
+  const body = $("tab-physical");
+  let root;
+  try {
+    root = JSON.parse(engine.physicalPlan(sql));
+  } catch (e) {
+    body.innerHTML = `<div class="error">${escapeHtml(String(e.message ?? e))}</div>`;
+    return;
+  }
+  const lines = [];
+  (function walk(node, depth) {
+    const pad = "  ".repeat(depth);
+    const arrow = depth > 0 ? "-> " : "";
+    const est =
+      node.estimated_rows === null || node.estimated_rows === undefined
+        ? ""
+        : ` <span class="phys-est">est ${Math.round(node.estimated_rows).toLocaleString()} rows</span>`;
+    lines.push(
+      `<div class="phys-node">${pad}${arrow}<span class="phys-op">${escapeHtml(node.name)}</span>${est}</div>`
+    );
+    if (node.detail) {
+      lines.push(`<div class="phys-node phys-detail">${pad}     ${escapeHtml(node.detail)}</div>`);
+    }
+    if (node.reason) {
+      lines.push(`<div class="phys-node phys-why">${pad}     ${escapeHtml(node.reason)}</div>`);
+    }
+    node.children.forEach((c) => walk(c, depth + 1));
+  })(root, 0);
+  body.innerHTML = `<div class="phys">${lines.join("")}</div>`;
+}
+
 /** Collect the rel ids in a subtree, so the whole of it can be highlighted. */
 function subtreeRels(node, target, found = new Set(), inside = false) {
   const here = inside || node.rel === target;
@@ -661,7 +700,7 @@ async function boot() {
   for (const tab of document.querySelectorAll(".tab")) {
     tab.addEventListener("click", () => {
       document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t === tab));
-      for (const name of ["results", "plan", "pipeline", "trace", "storage", "index"]) {
+      for (const name of ["results", "plan", "physical", "pipeline", "trace", "storage", "index"]) {
         $(`tab-${name}`).hidden = name !== tab.dataset.tab;
       }
       // Built when opened rather than after every query: neither depends on the
@@ -723,6 +762,7 @@ function run() {
     const explain = JSON.parse(engine.explain(sql));
     renderPlan(explain);
     renderTrace(explain);
+    renderPhysical(sql);
   } catch {
     // A query can execute and still not re-plan (it cannot, in practice) --
     // but the results are already rendered, so a plan failure must not lose
