@@ -1800,6 +1800,39 @@ distinct_S)` -- which is optimistic whenever the smaller side's values are not
 all present in the larger. Errors compound multiplicatively through a join tree:
 2x per join is 32x by the fifth.
 
+### A sample does not get to declare its tails empty
+
+The taxi dataset made a third source obvious. `WHERE trip_distance > 60` over
+7.4 million trips was estimated at **one row** against an actual 186.
+
+The histogram is built from a 20,000-row sample, which reached about thirty
+miles. `fraction_at_most(60)` returned exactly `1.0` -- not "almost all rows",
+but *certainty* that no trip is longer -- so `> 60` came out at zero and only
+the one-row floor saved it. The zone maps knew the longest trip in the file was
+830 miles the entire time: min and max are exact, over every row group, and
+cost nothing.
+
+So the histogram is told them. Where a value falls between the sample's
+outermost bucket and the column's real extreme, the mass out there is `1/n` for
+a sample of `n` -- the add-one estimate for an event that occurred zero times
+in `n` draws -- spread across the gap by the same interpolation the buckets
+use. Small, and not zero.
+
+```text
+                                   before    after
+  trip_distance > 60               186.0x     2.0x
+  trip_distance > 100               31.0x    11.3x
+  total_amount > 500                27.0x    13.8x
+  trip_distance > 5                  1.1x     1.1x
+```
+
+The last line is the control: inside the sampled range nothing changes. What is
+left is now *over*-estimation -- 369 predicted against 186 -- which is the
+honest direction for a cost model to be wrong in, because it makes the planner
+cautious about a predicate it cannot see rather than reckless. Across the
+corpus, whose tables are small enough that the sample is the whole column, p90
+q-error moves 2.28x to 2.25x and nothing regresses.
+
 ### Cardinality estimation, scored
 
 `cargo test -p engine --test qerror -- --nocapture` runs every corpus query and
@@ -2168,7 +2201,7 @@ group and got compacted every time. That alone cost 2x.
 
 ## Testing
 
-`cargo test` -- 361 tests plus a 1,066-record sqllogictest corpus, every query
+`cargo test` -- 363 tests plus a 1,066-record sqllogictest corpus, every query
 of which is additionally run seven ways and compared, run twice more against
 Parquet-backed tables (once with the writer's statistics and once against files
 that carry none), and scored for estimation accuracy. Property tests generate

@@ -256,6 +256,12 @@ impl TableStatistics {
                     *n = (*n as f64 * scale).round() as usize;
                 }
 
+                // The buckets come from a sample; the bounds above cover every
+                // row group exactly. Handing both over lets the histogram tell
+                // "no rows here" from "none in my sample".
+                let histogram = Histogram::build(&mut samples[c], histogram::DEFAULT_BUCKETS)
+                    .map(|h| h.with_exact_bounds(min.as_ref(), max.as_ref()));
+
                 ColumnStatistics {
                     null_count: nulls[c],
                     distinct_count: extrapolate_distinct(
@@ -265,7 +271,7 @@ impl TableStatistics {
                     ),
                     min,
                     max,
-                    histogram: Histogram::build(&mut samples[c], histogram::DEFAULT_BUCKETS),
+                    histogram,
                     most_common,
                 }
             })
