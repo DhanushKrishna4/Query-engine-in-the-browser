@@ -2156,6 +2156,10 @@ group and got compacted every time. That alone cost 2x.
 - **Decimal arithmetic degrades to Float64.** Decimals compare and cast exactly
   (rescaling through `i128`), but mixed-type arithmetic goes through `f64`
   rather than faking exact fixed-point results.
+- **Type names are reserved words.** `DATE`, `INT`, `TEXT` and the rest are
+  keywords because `CAST(x AS DATE)` needs them to be, so a column actually
+  named `date` has to be written `"date"`. The lexer could resolve this by
+  context; it does not, and the quoted form works.
 - **No `criterion`.** Benchmarks go through `qe --bench`, which times a query
   set under two *configurations* and reports the ratio -- vectorized against
   scalar, hash join against merge, pruning against none. That comparison is the
@@ -2167,7 +2171,7 @@ group and got compacted every time. That alone cost 2x.
 
 ## Testing
 
-`cargo test` -- 355 tests plus a 1,066-record sqllogictest corpus, every query
+`cargo test` -- 358 tests plus a 1,066-record sqllogictest corpus, every query
 of which is additionally run seven ways and compared, run twice more against
 Parquet-backed tables (once with the writer's statistics and once against files
 that carry none), and scored for estimation accuracy. Property tests generate
