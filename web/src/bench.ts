@@ -9,17 +9,68 @@
 // is believed. A benchmark that is faster because it computed something else is
 // not a benchmark, and running two independent SQL implementations over the
 // same data makes that check nearly free.
-import init, { QueryEngine, ColumnKind } from "./pkg/qe.js";
+import init, { QueryEngine, ColumnKind } from "../pkg/qe.js";
 
-const $ = (id) => document.getElementById(id);
+const $ = <T extends HTMLElement = HTMLElement>(id: string): T => {
+  const el = document.getElementById(id);
+  if (!el) throw new Error(`no element with id "${id}"`);
+  return el as T;
+};
 const decoder = new TextDecoder();
+const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+// ---------------------------------------------------------------------------
+// sql.js
+// ---------------------------------------------------------------------------
+
+/**
+ * Just enough of sql.js's surface to type the three calls made here.
+ *
+ * The package ships types, but adding it as a dependency to describe a script
+ * loaded at runtime from a CDN copy is more machinery than the four methods
+ * below are worth -- and the build must keep working when the vendored file is
+ * missing, which a compile-time import would not.
+ */
+interface SqlJsStatement {
+  run(values: unknown[]): void;
+  free(): void;
+}
+interface SqlJsDatabase {
+  run(sql: string): void;
+  exec(sql: string): { values: unknown[][] }[];
+  prepare(sql: string): SqlJsStatement;
+  close(): void;
+}
+interface SqlJsStatic {
+  Database: new () => SqlJsDatabase;
+}
+declare function initSqlJs(config: {
+  locateFile: (file: string) => string;
+}): Promise<SqlJsStatic>;
+
+/**
+ * Load the vendored sql.js the same way the page loads everything else:
+ * relative to the document, so it works at `/` locally and at `/<repo>/` on
+ * Pages. It is a classic script that assigns a global, not a module, so it is
+ * injected rather than imported.
+ */
+async function loadSqlJs(): Promise<SqlJsStatic> {
+  await new Promise<void>((resolve, reject) => {
+    const tag = document.createElement("script");
+    tag.src = "vendor/sql-wasm.js";
+    tag.onload = () => resolve();
+    tag.onerror = () => reject(new Error("could not load vendor/sql-wasm.js"));
+    document.head.appendChild(tag);
+  });
+  return initSqlJs({ locateFile: (f) => "vendor/" + f });
+}
 
 // ---------------------------------------------------------------------------
 // Data
 // ---------------------------------------------------------------------------
 
 /** Seeded so a rerun measures the same rows, not similar ones. */
-function mulberry32(seed) {
+function mulberry32(seed: number): () => number {
   return function () {
     seed |= 0;
     seed = (seed + 0x6d2b79f5) | 0;
@@ -37,7 +88,7 @@ function mulberry32(seed) {
  * benchmark query like `distance > 25` then matches nothing and measures two
  * engines agreeing that the answer is empty.
  */
-function gaussian(random) {
+function gaussian(random: () => number): number {
   let u = 0;
   while (u === 0) u = random();
   return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * random());
@@ -47,9 +98,9 @@ const VENDORS = ["yellow", "green", "fhv"];
 const BOROUGHS = ["Manhattan", "Brooklyn", "Queens", "Bronx", "Staten Island"];
 
 /** Taxi-shaped rows, as a CSV string and as an array for the INSERT path. */
-function generate(count) {
+function generate(count: number): { rows: unknown[][]; csv: string } {
   const random = mulberry32(7);
-  const rows = new Array(count);
+  const rows: unknown[][] = new Array(count);
   const parts = ["id,vendor,borough,passengers,distance,fare,tip,day\n"];
   for (let i = 0; i < count; i++) {
     const distance = Math.round(Math.exp(0.6 + 0.8 * gaussian(random)) * 100) / 100;
@@ -70,7 +121,7 @@ function generate(count) {
   return { rows, csv: parts.join("") };
 }
 
-const BOROUGH_ROWS = [
+const BOROUGH_ROWS: [string, string, number][] = [
   ["Manhattan", "core", 2.75],
   ["Brooklyn", "outer", 1.5],
   ["Queens", "outer", 1.5],
@@ -83,7 +134,7 @@ const BOROUGH_CSV = "borough,region,fee\n" + BOROUGH_ROWS.map((r) => r.join(",")
 // The queries
 // ---------------------------------------------------------------------------
 
-const QUERIES = [
+const QUERIES: [string, string][] = [
   ["count every row", "SELECT COUNT(*) FROM trips"],
   ["four aggregates, no grouping", "SELECT COUNT(*), AVG(fare), MIN(tip), MAX(distance) FROM trips"],
   ["filtered count", "SELECT COUNT(*) FROM trips WHERE fare > 45"],
@@ -117,14 +168,24 @@ const UNORDERED = new Set(QUERIES.map((q) => q[1]).filter((s) => !/ORDER BY/.tes
 // Running each engine
 // ---------------------------------------------------------------------------
 
-let wasm;
-let engine;
-let db;
+let wasm: { memory: WebAssembly.Memory };
+let engine: QueryEngine;
+let db: SqlJsDatabase | null = null;
+
+type Outcome = ReturnType<QueryEngine["query"]>;
+
+/** A result column, as views onto wasm memory. See `main.ts` for why `any`. */
+interface ColumnView {
+  kind: number;
+  validity: Uint8Array | null;
+  values: any;
+  offsets?: Uint32Array;
+}
 
 /** Read a result out of wasm memory as plain JS values. */
-function readOurs(outcome, meta) {
+function readOurs(outcome: Outcome, meta: { columns: unknown[] }): unknown[][] {
   const buffer = wasm.memory.buffer;
-  const views = meta.columns.map((_, i) => {
+  const views: ColumnView[] = meta.columns.map((_, i) => {
     const kind = outcome.kind(i);
     const rows = outcome.len(i);
     const ptr = outcome.valuesPtr(i);
@@ -153,15 +214,15 @@ function readOurs(outcome, meta) {
     }
   });
 
-  const out = [];
+  const out: unknown[][] = [];
   const rows = views[0] ? outcome.len(0) : 0;
   for (let r = 0; r < rows; r++) {
-    const row = [];
+    const row: unknown[] = [];
     for (const v of views) {
       if (v.validity && (v.validity[r >> 3] & (1 << (r & 7))) === 0) {
         row.push(null);
       } else if (v.kind === ColumnKind.Utf8) {
-        row.push(decoder.decode(v.values.subarray(v.offsets[r], v.offsets[r + 1])));
+        row.push(decoder.decode(v.values.subarray(v.offsets![r], v.offsets![r + 1])));
       } else if (v.kind === ColumnKind.Boolean) {
         row.push((v.values[r >> 3] & (1 << (r & 7))) !== 0);
       } else if (v.kind === ColumnKind.Int64) {
@@ -175,13 +236,13 @@ function readOurs(outcome, meta) {
   return out;
 }
 
-function runOurs(sql) {
+function runOurs(sql: string): unknown[][] {
   const outcome = engine.query(sql);
   return readOurs(outcome, JSON.parse(outcome.meta));
 }
 
-function runSqlite(sql) {
-  const result = db.exec(sql);
+function runSqlite(sql: string): unknown[][] {
+  const result = db!.exec(sql);
   return result.length === 0 ? [] : result[0].values;
 }
 
@@ -193,7 +254,7 @@ function runSqlite(sql) {
  * results are sorted, because neither engine promises an order the SQL did not
  * ask for.
  */
-function normalize(rows, unordered) {
+function normalize(rows: unknown[][], unordered: boolean): string[] {
   const text = rows.map((row) =>
     row
       .map((v) => {
@@ -218,7 +279,7 @@ function normalize(rows, unordered) {
 const CLOCK_RESOLUTION_MS = 0.1;
 
 /** Minimum of `runs`, after one untimed warm-up. */
-function time(fn, runs) {
+function time(fn: () => void, runs: number): number {
   fn();
   let best = Infinity;
   for (let i = 0; i < runs; i++) {
@@ -233,27 +294,27 @@ function time(fn, runs) {
 // Driving it
 // ---------------------------------------------------------------------------
 
-const say = (html) => {
+const say = (html: string) => {
   $("status").innerHTML = html;
 };
-const yieldToPaint = () => new Promise((r) => setTimeout(r, 0));
+const yieldToPaint = () => new Promise<void>((r) => setTimeout(r, 0));
 
 async function boot() {
   wasm = await init();
-  const SQL = await initSqlJs({ locateFile: (f) => "vendor/" + f });
+  const SQL = await loadSqlJs();
   say('<p class="empty">both engines loaded. Pick a size and run.</p>');
   $("go").addEventListener("click", () =>
-    run(SQL).catch((e) => {
-      say('<div class="error">' + esc(e.message ?? e) + "</div>");
-      $("go").disabled = false;
+    run(SQL).catch((e: unknown) => {
+      say('<div class="error">' + esc(message(e)) + "</div>");
+      $<HTMLButtonElement>("go").disabled = false;
     })
   );
 }
 
-async function run(SQL) {
-  const count = Number($("rows").value);
-  const runs = Number($("runs").value);
-  $("go").disabled = true;
+async function run(SQL: SqlJsStatic) {
+  const count = Number($<HTMLInputElement>("rows").value);
+  const runs = Number($<HTMLInputElement>("runs").value);
+  $<HTMLButtonElement>("go").disabled = true;
   $("results-panel").hidden = true;
   $("notes-panel").hidden = true;
 
@@ -289,7 +350,7 @@ async function run(SQL) {
   db.run("COMMIT");
   const sqliteLoad = performance.now() - sqliteLoadStart;
 
-  const results = [];
+  const results: Measurement[] = [];
   for (const q of QUERIES) {
     say('<p class="empty">running: ' + esc(q[0]) + "…</p>");
     await yieldToPaint();
@@ -310,10 +371,21 @@ async function run(SQL) {
   const indexed = QUERIES.slice(-2).map((q) => measure(q[0], q[1], runs));
 
   render({ count, runs, results, indexed, ourLoad, sqliteLoad, sqliteIndex, ourIndex });
-  $("go").disabled = false;
+  $<HTMLButtonElement>("go").disabled = false;
 }
 
-function measure(label, sql, runs) {
+/** One query, timed in both engines, with whether they agreed on the answer. */
+interface Measurement {
+  label: string;
+  sql: string;
+  rows: number;
+  /** "yes", "NO", or the error that stopped it -- rendered as written. */
+  agreed: string;
+  ours: number | null;
+  theirs: number | null;
+}
+
+function measure(label: string, sql: string, runs: number): Measurement {
   try {
     const a = normalize(runOurs(sql), UNORDERED.has(sql));
     const b = normalize(runSqlite(sql), UNORDERED.has(sql));
@@ -327,11 +399,22 @@ function measure(label, sql, runs) {
       theirs: time(() => runSqlite(sql), runs),
     };
   } catch (e) {
-    return { label, sql, rows: 0, agreed: "error: " + (e.message ?? e), ours: null, theirs: null };
+    return { label, sql, rows: 0, agreed: "error: " + message(e), ours: null, theirs: null };
   }
 }
 
-function render(r) {
+interface Report {
+  count: number;
+  runs: number;
+  results: Measurement[];
+  indexed: Measurement[];
+  ourLoad: number;
+  sqliteLoad: number;
+  sqliteIndex: number;
+  ourIndex: number;
+}
+
+function render(r: Report) {
   say(
     '<p class="empty">' +
       r.count.toLocaleString() +
@@ -340,12 +423,13 @@ function render(r) {
       " runs after a warm-up · every result checked against the other engine's before it was timed</p>"
   );
 
-  const rowHtml = (x) => {
+  const rowHtml = (x: Measurement) => {
     if (x.ours === null) {
       return "<tr><td>" + esc(x.label) + '</td><td colspan="5" class="null">' + esc(x.agreed) + "</td></tr>";
     }
-    const measurable = x.ours >= CLOCK_RESOLUTION_MS && x.theirs >= CLOCK_RESOLUTION_MS;
-    const ratio = x.theirs / x.ours;
+    const theirs = x.theirs!;
+    const measurable = x.ours >= CLOCK_RESOLUTION_MS && theirs >= CLOCK_RESOLUTION_MS;
+    const ratio = theirs / x.ours;
     const colour = ratio >= 1 ? "var(--accent)" : "var(--warn)";
     const verdict = measurable
       ? '<td class="num" style="color:' + colour + '">' + ratio.toFixed(2) + "x</td>"
@@ -353,7 +437,7 @@ function render(r) {
     return (
       '<tr><td title="' + esc(x.sql) + '">' + esc(x.label) + "</td>" +
       '<td class="num">' + (x.ours < CLOCK_RESOLUTION_MS ? "&lt;0.1" : x.ours.toFixed(2)) + "</td>" +
-      '<td class="num">' + (x.theirs < CLOCK_RESOLUTION_MS ? "&lt;0.1" : x.theirs.toFixed(2)) + "</td>" +
+      '<td class="num">' + (theirs < CLOCK_RESOLUTION_MS ? "&lt;0.1" : theirs.toFixed(2)) + "</td>" +
       verdict +
       '<td class="num">' + x.rows.toLocaleString() + "</td>" +
       '<td class="' + (x.agreed === "yes" ? "" : "null") + '">' + esc(x.agreed) + "</td></tr>"
@@ -371,9 +455,9 @@ function render(r) {
   $("results-panel").hidden = false;
 
   const timed = r.results.filter(
-    (x) => x.ours !== null && x.ours >= CLOCK_RESOLUTION_MS && x.theirs >= CLOCK_RESOLUTION_MS
+    (x) => x.ours !== null && x.ours >= CLOCK_RESOLUTION_MS && x.theirs! >= CLOCK_RESOLUTION_MS
   );
-  const wins = timed.filter((x) => x.theirs / x.ours >= 1).length;
+  const wins = timed.filter((x) => x.theirs! / x.ours! >= 1).length;
   const disagreed = r.results.concat(r.indexed).filter((x) => x.agreed !== "yes");
 
   $("notes").innerHTML =
@@ -397,8 +481,11 @@ function render(r) {
   $("notes-panel").hidden = false;
 }
 
-function esc(s) {
-  return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+function esc(s: unknown): string {
+  const map: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
+  return String(s).replace(/[&<>"]/g, (c) => map[c]);
 }
 
-boot().catch((e) => say('<div class="error">failed to start: ' + esc(e.message ?? e) + "</div>"));
+boot().catch((e: unknown) =>
+  say('<div class="error">failed to start: ' + esc(message(e)) + "</div>")
+);

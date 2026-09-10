@@ -578,9 +578,39 @@ struct IndexInfo {
     matched: Option<usize>,
 }
 
+/// A diagnostic with its position, for an inline marker in the editor.
+///
+/// `start` and `end` are **byte** offsets into the SQL, which is what every
+/// span in this engine has carried since the lexer. The editor counts UTF-16
+/// code units, so it converts -- see `byteToChar` on the page.
+#[derive(Serialize)]
+struct CheckInfo {
+    message: String,
+    hint: Option<String>,
+    stage: String,
+    start: usize,
+    end: usize,
+}
+
+/// One token, with the source it came from.
+///
+/// The span travels with it so the page can underline the characters a token
+/// covers when the reader points at it. Byte offsets, like everywhere else in
+/// this engine -- the page converts.
+#[derive(Serialize)]
+struct TokenInfo {
+    kind: String,
+    text: String,
+    start: usize,
+    end: usize,
+}
+
 #[derive(Serialize)]
 struct ExplainInfo {
-    tokens: Vec<String>,
+    tokens: Vec<TokenInfo>,
+    /// The parse tree as `ast::pretty` writes it: two spaces per level, one
+    /// node per line. The page reads the indentation back into a tree, which
+    /// is why the format is worth stating here as well as there.
     ast: String,
     bound: String,
     optimized: String,
@@ -626,7 +656,15 @@ impl QueryEngine {
             .tokenize(sql)
             .map_err(|d| d.render(sql))?
             .iter()
-            .map(|t| format!("{:?} {:?}", t.kind, &sql[t.span.start..t.span.end]))
+            .map(|t| TokenInfo {
+                kind: format!("{:?}", t.kind),
+                // The source, not the token's own `text`: a string literal has
+                // already been unescaped by then, and the tokens view is about
+                // what the lexer read rather than what it produced.
+                text: sql[t.span.start..t.span.end].to_string(),
+                start: t.span.start,
+                end: t.span.end,
+            })
             .collect();
         let ast = self.inner.parse(sql).map_err(|d| d.render(sql))?;
         let bound = self.inner.bound_plan(sql).map_err(|d| d.render(sql))?;
@@ -635,7 +673,7 @@ impl QueryEngine {
 
         let info = ExplainInfo {
             tokens,
-            ast: format!("{ast:#?}"),
+            ast: engine::parser::ast::pretty(&ast),
             bound: engine::plan::explain(&bound, false),
             optimized: engine::plan::explain(&optimized, false),
             typed: engine::plan::explain(&optimized, true),
@@ -676,6 +714,26 @@ impl QueryEngine {
 
     /// Row groups, their zone maps, their bloom filters, and -- for a lazily
     /// loaded table -- how much of each has actually been decoded.
+    pub(crate) fn check_inner(&self, sql: &str) -> String {
+        let Err(d) = self.inner.bound_plan(sql) else {
+            return "null".to_string();
+        };
+        // A diagnostic with no span -- one about the query as a whole rather
+        // than a place in it -- underlines everything rather than guessing.
+        let span = d.span.unwrap_or(engine::error::Span {
+            start: 0,
+            end: sql.len(),
+        });
+        let info = CheckInfo {
+            message: d.headline(),
+            hint: d.hint.clone(),
+            stage: d.stage.to_string(),
+            start: span.start,
+            end: span.end,
+        };
+        serde_json::to_string(&info).unwrap_or_else(|_| "null".into())
+    }
+
     pub(crate) fn physical_plan_inner(&self, sql: &str) -> Result<String, String> {
         let stats = self.inner.physical_plan(sql).map_err(|d| d.render(sql))?;
         Ok(serde_json::to_string(&physical_node(&stats)).unwrap_or_else(|_| "{}".into()))
@@ -871,6 +929,15 @@ impl QueryEngine {
     /// Run a query and keep its columns in wasm memory.
     pub fn query(&mut self, sql: &str) -> Result<QueryOutcome, JsValue> {
         self.query_inner(sql).map_err(js)
+    }
+
+    /// Parse and bind without running, reporting where an error points.
+    ///
+    /// Returns `null` when the query is valid. Cheap enough to run on every
+    /// keystroke: it stops before the optimizer, and the optimizer is the part
+    /// that costs anything.
+    pub fn check(&self, sql: &str) -> String {
+        self.check_inner(sql)
     }
 
     /// The physical plan: which operator was chosen at each node, and why.

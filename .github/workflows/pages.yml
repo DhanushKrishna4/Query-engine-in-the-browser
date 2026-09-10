@@ -33,22 +33,39 @@ jobs:
       - name: Install wasm-pack
         run: curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # Pages serves this repository at /<repo>/, and Vite needs to know that
+      # to write the asset URLs. `${{ steps.pages.outputs.base_path }}` is the
+      # path GitHub will actually use, so it cannot drift from the repository
+      # name the way a hard-coded string would.
+      - id: pages
+        uses: actions/configure-pages@v5
+
       - name: Build the site
         run: tools/build_web.sh
+        env:
+          SITE_BASE: ${{ steps.pages.outputs.base_path }}/
 
-      # Every path in the page is relative, so the site works at
-      # https://user.github.io/<repo>/ without a base path being compiled in.
-      # This is the check that keeps it that way.
-      - name: No absolute paths
+      # Vite rewrites every URL it can see to sit under SITE_BASE. The two it
+      # cannot are the ones fetched at runtime out of `public/`: the datasets
+      # and sql.js. A leading slash on either breaks the site under a
+      # repository subpath and nowhere else, which is the worst place for a
+      # bug to hide, so it is checked rather than remembered.
+      - name: No absolute runtime paths
         run: |
-          if grep -rnoE '(src|href)="/[^"]|fetch\("/[^"]|from "/[^"]' web/*.html web/*.js; then
+          if grep -rnE '"/(data|vendor)/' web/src web/*.html; then
             echo "absolute path found: the site would break under a repository subpath" >&2
             exit 1
           fi
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: web
+          path: web/dist
 
   deploy:
     needs: build

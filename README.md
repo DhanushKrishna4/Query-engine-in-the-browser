@@ -45,7 +45,7 @@ optimizer has and almost nothing shows it to you.
 crates/engine     the whole pipeline. no dependencies at all, builds for wasm32.
 crates/cli        native REPL -- the primary development surface.
 crates/wasm       the wasm boundary. the only crate that knows JavaScript exists.
-web/              the page: editor, plan, pipeline, storage, index, benchmark.
+web/              the page: TypeScript + Vite, CodeMirror editor, every panel.
 data/             small sample tables.
 benches/          benchmark query sets.
 tests/sqllogictest/   the differential corpus.
@@ -92,11 +92,20 @@ In a browser, without installing anything:
 **[the live site](https://dhanushkrishna4.github.io/Query-engine-in-the-browser/)**,
 and **[/bench.html](https://dhanushkrishna4.github.io/Query-engine-in-the-browser/bench.html)**
 for the head-to-head against sql.js. To run that same page locally against your
-own build, `tools/build_web.sh --serve` serves it on http://localhost:8137.
+own build, `tools/build_web.sh --serve` serves it on http://localhost:8137;
+without `--serve` it produces `web/dist`, which is what the site is.
 
-For volume, `tools/gen_sample.py 1000000 > /tmp/trips.csv` writes a synthetic
-NYC-taxi-shaped CSV. Real datasets are never committed -- in the browser they
-come from a CDN and are cached in IndexedDB.
+Three tiny tables load before the page draws, so the first query runs
+immediately. Two real ones are a button away and come from a CDN at runtime:
+**TPC-H at scale factor 0.01** -- eight tables, foreign keys throughout, the
+schema the join reordering and decorrelation rules were written for -- and
+**every yellow cab trip in New York in April 2019**, 7.4 million rows in a
+127 MB Parquet file with 114 row groups. Both are cached in IndexedDB, so the
+second visit costs nothing. Neither is committed to this repository; a dataset
+is a byte buffer that arrived from somewhere, and the engine never does I/O.
+
+For volume natively, `tools/gen_sample.py 1000000 > /tmp/trips.csv` writes a
+synthetic NYC-taxi-shaped CSV.
 
 ### About the numbers in this file
 
@@ -161,11 +170,14 @@ file's own statistics, and a column chunk is decoded the first time a scan asks
 for one. `.load` picks the reader from the bytes, not the file name.
 
 **In the browser.** A `wasm-bindgen` boundary crate wrapping `Engine`, with
-results read as typed-array views straight out of wasm memory, and a page
-showing the plan, every optimizer rewrite, per-operator timings and row counts,
-the row groups and zone maps underneath, and the B+ tree an index scan descends.
-A second page runs the same queries against sql.js in the same tab.
-`tools/build_web.sh --serve` builds and serves both.
+results read as typed-array views straight out of wasm memory, and a page that
+walks the whole pipeline: the lexer's tokens, the parse tree, the bound plan
+with its resolved types, every optimizer rewrite before and after, the physical
+plan with the reason for each operator chosen, and the execution annotated with
+estimated against actual rows. Under that, the row groups and zone maps the
+scan pruned on, and the B+ tree an index scan descends. A second page runs the
+same queries against sql.js in the same tab. `tools/build_web.sh --serve`
+builds and serves both.
 
 **Errors.** Every token, AST node and bound expression carries a byte span, so
 every diagnostic points at the exact characters:
@@ -643,7 +655,7 @@ spec, which was the faster route by a wide margin.
 ### The corpus, answered from Parquet
 
 `tests/parquet_corpus.rs` redirects every `load` in the sqllogictest corpus to
-the Parquet twin of the same table and runs the whole thing: **974 records**,
+the Parquet twin of the same table and runs the whole thing: **1,066 records**,
 every join, aggregate, window, subquery, NULL case and index scan, answered from
 Parquet and compared against the expectations SQLite produced from the CSV.
 
@@ -656,6 +668,45 @@ looks at.
 pyarrow generates the fixtures and is the oracle here, exactly as SQLite is the
 oracle for SQL semantics: a mature independent implementation, used as a tool
 rather than as a dependency. Nothing in `crates/` knows it exists.
+
+### The bug that returned nothing, quietly
+
+That corpus now runs a third time, against `*_no_stats.parquet` -- the same
+data written with the footer statistics left out -- because a real file taught
+me the reader could not survive them being missing.
+
+A zone map with no min and no max meant *every value in this group is NULL*.
+That is what `ColumnStats::compute` produces, and the pruner was written
+against it. But a Parquet writer may record no statistics at all, and
+`chunk_stats` has always returned `None` for the bounds when it does -- its own
+comment says unknown bounds should rule nothing out. The pruner read them as an
+empty group and skipped it. Every row group, every query, no rows, **no error**.
+
+Six of the seven corpus records that caught it are `IS NULL`, which failed the
+same way one field over: a null count that was recorded as zero when it had
+simply never been written.
+
+So both go three-state. Bounds absent *and* a null count saying the group is
+entirely NULL is still skippable; bounds absent and anything else known is not.
+`null_count` is now `Option<usize>`, and the two consumers that only estimate
+-- the cost model and the storage inspector -- treat unknown as zero and as
+`?`, which is a wrong estimate rather than a wrong answer.
+
+I found it looking at a TPC-H file whose statistics were not absent but
+*wrong*. `parquet-rs` 4.3.0 wrote byte-array bounds in the order it met the
+values rather than in sorted order, so a dictionary-encoded column claimed
+min `BUILDING`, max `AUTOMOBILE` -- and `WHERE c_mktsegment = 'BUILDING'`
+returned nothing, because the value sorts above a maximum that is not one.
+
+Bounds that cross are now discarded on the way in. Some readers keep a list of
+known-bad writers and sniff `created_by`; an impossible range is a better test,
+because it needs no list and catches writers nobody has heard of yet. Both
+bounds are dropped rather than swapped: a writer confused enough to produce an
+impossible range has not earned the assumption that it is merely reversed.
+
+Dropping them is what exposed the first bug. The file then had no bounds, the
+pruner skipped every group, and the query still returned nothing -- for an
+entirely different reason.
 
 ## Merge join, and the aggregate that streams
 
@@ -891,9 +942,35 @@ tools/build_web.sh --serve      # http://localhost:8137
 `crates/wasm` is the only crate that knows JavaScript exists. `engine` still has
 no dependencies and no host assumptions; everything wasm-specific -- the
 bindings, the JSON, the panic hook, the clock -- lives on the other side of that
-boundary. The page is four files and a 939 KiB `.wasm`: no bundler, no
-`node_modules`, `--target web` emitting an ES module a plain
-`<script type="module">` can load.
+boundary.
+
+The page itself is TypeScript under `strict`, built by Vite. `wasm-pack
+--target web` emits an ES module, and Vite treats it like any other import:
+the `.wasm` becomes a hashed asset and the glue is bundled with everything
+else. `SITE_BASE` decides the path the assets are written under, because
+GitHub Pages serves this repository from `/<repo>/` and a base baked in at
+compile time would break the local build.
+
+### The editor
+
+CodeMirror 6, for the three things a `<textarea>` cannot do.
+
+**Syntax highlighting** comes from `@codemirror/lang-sql`, which also drives
+the other two: it knows where an identifier is expected and where a string
+literal is.
+
+**Completion is fed from the engine's catalog**, so the tables and columns
+offered are the ones actually loaded, annotated with their types. A completion
+list built from a hard-coded schema is worse than none -- it is confidently
+wrong the moment a dataset changes -- so loading a collection reconfigures it.
+
+**Errors are underlined where they happened**, from the byte offsets every
+token, AST node and bound expression has carried since the first commit. That
+is also the trap: the engine counts bytes and CodeMirror counts UTF-16 code
+units, which are the same number for ASCII and are not for
+`SELECT 'café', naem FROM people`. The conversion walks the string once,
+counting UTF-8 lengths per code point; without it the underline slides one
+character left of the word it is about, on exactly the queries nobody tests.
 
 ### Results do not cross as values
 
@@ -949,18 +1026,32 @@ numbers, coarse ones -- sub-microsecond per-operator timings on wasm are noise.
 
 ### What the page shows
 
-Four tabs, all fed by instrumentation the engine has carried since step 8 rather
-than added for a UI:
+The tabs are the pipeline, in the order it runs, all fed by instrumentation the
+engine has carried since step 8 rather than added for a UI:
 
 | | |
 | --- | --- |
 | **results** | the grid, read out of wasm memory |
-| **plan** | the optimized plan, the same plan with every leaf's resolved type, and the plan as the binder produced it |
-| **physical plan** | which operator was chosen at each node, and *why* that one |
-| **pipeline** | the operator tree with rows in and out, each node's *exclusive* share of the time as a bar, the batches it handed upward, row groups read versus pruned, and the estimate beside reality with its q-error |
+| **tokens** | the lexer's output, each chip naming its kind; pointing at one underlines the characters it was read from |
+| **AST** | the parse tree, collapsible |
+| **bound plan** | the optimized plan, the same plan with every leaf's resolved type, and the plan as the binder produced it |
 | **optimizer trace** | a slider over the rewrites, one at a time, with the subtree the rule fired at highlighted in both plans |
+| **physical plan** | which operator was chosen at each node, and *why* that one |
+| **execution** | the operator tree with rows in and out, each node's *exclusive* share of the time as a bar, the batches it handed upward, row groups read versus pruned, and the estimate beside reality with its q-error |
 | **storage** | every row group's zone map, bloom filters, and -- for a Parquet table -- how many of its columns have actually been decoded |
 | **index** | a B+ tree drawn level by level, and the path a probe takes down it |
+
+The AST panel is drawn from `ast::pretty`, the same indented text the parser's
+snapshot tests assert on: two spaces per level, one node per line, so the
+indentation *is* the structure and the page reads it back into a tree. One
+description of the AST rather than two that can drift, and the one that exists
+is already pinned by tests.
+
+Each example query carries a note saying which panel to open and what to look
+for once the answer is on screen -- that a contradiction folds the query to an
+empty result before the scan runs, that a LEFT join whose padding a filter
+rejects becomes an inner one, that `salary * 1.1` written three times is
+computed once. A query with no such note is just a query.
 
 ### Four views, and what each is actually showing
 
@@ -978,7 +1069,13 @@ highlighted in both plans rather than left to be found by diffing two blocks of
 text. Plans cross the boundary as trees now, not strings.
 
 **The storage inspector** is where the last three steps become visible at once.
-Opening it on the Parquet table after running
+On the taxi table it reads `7,433,139 rows · 114 row groups · 146.5 MiB ·
+lazily decoded from Parquet`, and after
+`SELECT ... FROM trips WHERE trip_distance > 60` the scan line says
+`87/114 row groups read` and `14 column(s) pruned`: twenty-seven groups whose
+footer bounds could not hold a sixty-mile trip, and four of eighteen columns
+decoded. On the small Parquet table the whole picture fits. Opening it after
+running
 `SELECT id, token FROM metrics WHERE id >= 300 AND id < 340`:
 
 ```text
@@ -994,7 +1091,10 @@ row group 3   128 rows     0/10 columns decoded     id  int32  min 384  max 511
 One row group read out of eight, and in it two columns of ten. The bounds came
 from the file's footer, so the seven skipped groups were never touched. Group 0
 is fully decoded because registration sampled it to build the cost model's
-histograms -- the tradeoff from step 16, visible rather than described.
+histograms -- the tradeoff from step 16, visible rather than described. Four
+groups are sampled now, spread across the file rather than taken from the
+front, because real files are written in order and a sample of the first groups
+of a month of taxi trips is a sample of the first of the month.
 
 **The index visualizer** draws the tree and the descent. A level wider than the
 cap is sampled evenly across its key range -- an index over a million rows has
@@ -1040,10 +1140,14 @@ rendered errors. That is possible because the logic is split from the
 `#[wasm_bindgen]` surface: `JsValue` cannot be constructed off a wasm target, it
 aborts, so the JS methods are one-line adapters over plain-Rust ones.
 
-The page itself was then driven in Chrome -- queries run, results compared
-against the native CLI value for value, the trace and pipeline panels inspected,
-the error path checked. The same join returns the same three rows in the same
-order on both sides.
+The page itself was then driven in a browser -- queries run, results compared
+against the native CLI value for value, every panel inspected, the error path
+checked. TPC-H Q3, Q4 and Q6 were fetched from the CDN and answered in the tab,
+matching both the native build and the published answers for scale factor 0.01;
+the 7.4-million-row taxi aggregate came back in 315 ms with the same numbers
+the native CLI gives. Completion offers `salary` from the live catalog, and
+the diagnostic for `SELECT 'café', naem FROM people` underlines `naem` and not
+the character before it.
 
 ### Deliberately not yet
 
@@ -1315,9 +1419,15 @@ printing a ratio.
 Live at
 **[dhanushkrishna4.github.io/Query-engine-in-the-browser](https://dhanushkrishna4.github.io/Query-engine-in-the-browser/)**.
 
-The site is static: a `.wasm`, four files, the sample data and sql.js. Nothing
+The site is static: a `.wasm`, a bundle, the sample data and sql.js. Nothing
 runs on a server, so there is no server to deploy -- `tools/build_web.sh`
-produces a directory and GitHub Pages serves it.
+produces `web/dist` and GitHub Pages serves it.
+
+A query travels in the URL, so a link to this page can be a link to a specific
+query: `?query=<encoded>&dataset=<table>`. **Share** puts the current one there
+and on the clipboard. `404.html` forwards anything else back to the site root,
+carrying the query string with it, so a truncated share link still lands on the
+engine rather than on a dead end.
 
 Two workflows in `.github/workflows/`:
 
@@ -1976,9 +2086,10 @@ group and got compacted every time. That alone cost 2x.
 
 ## Testing
 
-`cargo test` -- 347 tests plus a 1,066-record sqllogictest corpus, every query of
-which is additionally run seven ways and compared, run a second time against
-Parquet-backed tables, and scored for estimation accuracy.
+`cargo test` -- 352 tests plus a 1,066-record sqllogictest corpus, every query of
+which is additionally run seven ways and compared, run twice more against
+Parquet-backed tables -- once with the writer's statistics and once against
+files that carry none -- and scored for estimation accuracy.
 
 Unit tests live beside each module; end-to-end tests are in
 `crates/engine/src/tests.rs`, with a dedicated NULL-semantics section covering

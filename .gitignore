@@ -11,8 +11,10 @@
 # datasets copied out of data/, and sql.js fetched from a CDN. All reproducible,
 # so none of it belongs in the repository.
 /web/pkg/
-/web/data/
-/web/vendor/
+/web/dist/
+/web/node_modules/
+/web/public/data/
+/web/public/vendor/
 
 # Generated benchmark fixtures live outside the repo entirely (/tmp), but catch
 # them if anyone points the generator here.

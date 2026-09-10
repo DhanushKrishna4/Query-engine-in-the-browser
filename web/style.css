@@ -32,6 +32,46 @@ textarea {
   width: 100%; border: 0; background: transparent; color: var(--fg);
   font: inherit; padding: 1rem; resize: vertical; outline: none; display: block;
 }
+
+/* CodeMirror manages its own internals; this only bounds the box it sits in,
+   so a long query scrolls rather than pushing the tabs off the screen. */
+#editor { padding: .4rem 0; }
+/* What to look at once the query has run: the reason the example is here. */
+/* The opt-in datasets, under the catalog. */
+.collections {
+  display: flex; flex-wrap: wrap; gap: .5rem; align-items: center;
+  padding: 0 1rem 1rem;
+}
+.collections .hint { margin-right: .2rem; }
+.load-set { font-size: .8rem; }
+.load-set .dim { color: var(--dim); }
+
+/* Tokens: the lexer's output as a strip of chips, each naming its kind. */
+.tokens { display: flex; flex-wrap: wrap; gap: .35rem; }
+.token {
+  display: inline-flex; align-items: baseline; gap: .35rem;
+  background: #1d222c; border: 1px solid var(--line); border-radius: 4px;
+  padding: .15rem .45rem; font-family: var(--mono); font-size: .78rem;
+  cursor: default;
+}
+.token:hover { border-color: var(--accent); }
+.token-kind { color: var(--dim); font-size: .65rem; }
+
+/* AST: nested <details>, so a subtree folds away. */
+ul.ast, ul.ast ul { list-style: none; margin: 0; padding: 0 0 0 1rem; }
+ul.ast { padding-left: 0; }
+ul.ast li { font-family: var(--mono); font-size: .8rem; line-height: 1.55; }
+ul.ast summary { cursor: pointer; }
+ul.ast summary::marker { color: var(--dim); }
+ul.ast .ast-leaf { padding-left: 1.05rem; color: var(--fg); }
+ul.ast details > summary { color: var(--accent); }
+
+.watch {
+  margin: 0; padding: 0 1rem .8rem; color: var(--dim);
+  font-size: .78rem; max-width: 90ch;
+}
+#editor .cm-editor { max-height: 40vh; }
+#editor .cm-scroller { overflow: auto; }
 .row { display: flex; gap: .6rem; align-items: center; padding: .7rem 1rem; border-top: 1px solid var(--line); flex-wrap: wrap; }
 button, select {
   font: inherit; background: #1d222c; color: var(--fg);

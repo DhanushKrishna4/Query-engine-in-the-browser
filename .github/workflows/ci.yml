@@ -51,3 +51,38 @@ jobs:
       # stale file nobody regenerated.
       - name: Expectations still match SQLite
         run: python3 tools/gen_expected.py --check tests/sqllogictest/*.slt
+
+  # The page is TypeScript under `strict`, and the point of that is the type
+  # error you get before the browser does. The deploy workflow type-checks too,
+  # but it only runs on main -- a pull request should not have to be merged to
+  # find out that the frontend does not compile.
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install wasm-pack
+        run: curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+
+      # `web/pkg` is generated, so the types the page imports do not exist
+      # until the module is built. There is nothing to check without it.
+      - name: Build the wasm module
+        run: |
+          wasm-pack build crates/wasm --release --target web \
+            --out-dir "$PWD/web/pkg" --out-name qe
+
+      - run: npm --prefix web ci
+      - run: npm --prefix web run build

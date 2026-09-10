@@ -1,0 +1,25 @@
+{
+  "name": "query-engine-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "typescript": "^5.9.3",
+    "vite": "^8.2.2"
+  },
+  "dependencies": {
+    "@codemirror/autocomplete": "^6.19.2",
+    "@codemirror/commands": "^6.11.0",
+    "@codemirror/lang-sql": "^6.9.1",
+    "@codemirror/lint": "^6.9.1",
+    "@codemirror/state": "^6.5.2",
+    "@codemirror/view": "^6.39.1",
+    "codemirror": "^6.0.2"
+  }
+}

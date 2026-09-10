@@ -20,6 +20,7 @@
       <span class="hint" id="load-status">loading…</span>
     </div>
     <div id="catalog" class="catalog"></div>
+    <div id="collections" class="collections"></div>
   </section>
 
   <section class="panel">
@@ -27,30 +28,37 @@
       <h2>query</h2>
       <span class="hint">⌘/Ctrl + Enter to run</span>
     </div>
-    <textarea id="sql" spellcheck="false" rows="5"></textarea>
+    <div id="editor"></div>
     <div class="row">
       <button id="run" class="primary">Run</button>
       <select id="examples" aria-label="example queries"></select>
+      <button id="share" title="put this query in a shareable link">Share</button>
+      <span id="share-status" class="hint"></span>
       <span id="timing" class="timing"></span>
     </div>
+    <p class="watch" id="watch"></p>
   </section>
 
   <section class="panel" id="output">
     <nav class="tabs" role="tablist">
       <button class="tab active" data-tab="results">results</button>
-      <button class="tab" data-tab="plan">plan</button>
-      <button class="tab" data-tab="physical">physical plan</button>
-      <button class="tab" data-tab="pipeline">pipeline</button>
+      <button class="tab" data-tab="tokens">tokens</button>
+      <button class="tab" data-tab="ast">AST</button>
+      <button class="tab" data-tab="plan">bound plan</button>
       <button class="tab" data-tab="trace">optimizer trace</button>
+      <button class="tab" data-tab="physical">physical plan</button>
+      <button class="tab" data-tab="pipeline">execution</button>
       <button class="tab" data-tab="storage">storage</button>
       <button class="tab" data-tab="index">index</button>
     </nav>
     <div id="error" class="error" hidden></div>
     <div class="tab-body" id="tab-results"></div>
+    <div class="tab-body" id="tab-tokens" hidden></div>
+    <div class="tab-body" id="tab-ast" hidden></div>
     <div class="tab-body" id="tab-plan" hidden></div>
+    <div class="tab-body" id="tab-trace" hidden></div>
     <div class="tab-body" id="tab-physical" hidden></div>
     <div class="tab-body" id="tab-pipeline" hidden></div>
-    <div class="tab-body" id="tab-trace" hidden></div>
     <div class="tab-body" id="tab-storage" hidden></div>
     <div class="tab-body" id="tab-index" hidden></div>
   </section>
@@ -61,6 +69,6 @@
   &nbsp;&middot;&nbsp; <a href="bench.html" style="color:var(--accent)">benchmark against sql.js &rarr;</a>
 </footer>
 
-<script type="module" src="app.js"></script>
+<script type="module" src="./src/main.ts"></script>
 </body>
 </html>

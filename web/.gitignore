@@ -1,4 +1,6 @@
 # All produced by tools/build_web.sh.
 pkg/
-data/
-vendor/
+dist/
+node_modules/
+public/data/
+public/vendor/
