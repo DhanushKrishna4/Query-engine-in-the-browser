@@ -43,6 +43,7 @@ optimizer has and almost nothing shows it to you.
 
 ```
 crates/engine     the whole pipeline. no dependencies at all, builds for wasm32.
+                  (`proptest` and `insta` are dev-only; CI checks the normal edges.)
 crates/cli        native REPL -- the primary development surface.
 crates/wasm       the wasm boundary. the only crate that knows JavaScript exists.
 web/              the page: TypeScript + Vite, CodeMirror editor, every panel.
@@ -2077,19 +2078,27 @@ group and got compacted every time. That alone cost 2x.
 - **Decimal arithmetic degrades to Float64.** Decimals compare and cast exactly
   (rescaling through `i128`), but mixed-type arithmetic goes through `f64`
   rather than faking exact fixed-point results.
-- **No `insta`.** Parser snapshot tests compare pretty-printed ASTs against
-  inline expectations, which keeps `engine` dependency-free. Same shape of
-  assertion; swap in `insta` whenever the dependency is worth it.
+- **No `criterion`.** Benchmarks go through `qe --bench`, which times a query
+  set under two *configurations* and reports the ratio -- vectorized against
+  scalar, hash join against merge, pruning against none. That comparison is the
+  point here, and criterion measures one implementation carefully rather than
+  two against each other. It is on the allowed list and stays unused.
 - **No result hashing in the sqllogictest harness.** The
   `N values hashing to <md5>` form exists to keep corpus files small; supporting
   it means an MD5 dependency or hand-rolling MD5, neither of which pays yet.
 
 ## Testing
 
-`cargo test` -- 352 tests plus a 1,066-record sqllogictest corpus, every query of
-which is additionally run seven ways and compared, run twice more against
-Parquet-backed tables -- once with the writer's statistics and once against
-files that carry none -- and scored for estimation accuracy.
+`cargo test` -- 355 tests plus a 1,066-record sqllogictest corpus, every query
+of which is additionally run seven ways and compared, run twice more against
+Parquet-backed tables (once with the writer's statistics and once against files
+that carry none), and scored for estimation accuracy. Property tests generate
+their own tables and queries on top of that; the committed run is 384 cases and
+`PROPTEST_CASES` takes it as high as you have patience for.
+
+Parser tests are `insta` inline snapshots: the SQL and the tree it produces sit
+side by side in the source, reviewed once and frozen, and updated by
+`cargo insta review` rather than by hand when the printer changes.
 
 Unit tests live beside each module; end-to-end tests are in
 `crates/engine/src/tests.rs`, with a dedicated NULL-semantics section covering
@@ -2232,12 +2241,47 @@ Results must also not depend on execution parameters, so the suite runs a query
 across batch sizes of 1, 7, 64, 2048 and 100,000 and across compaction
 thresholds and demands identical output.
 
+### Random tables, not just random queries
+
+`tests/property.rs` generates the *data* as well as the query. The corpus covers
+the cases someone thought of and `tools/fuzz_queries.py` covers several hundred
+more, but both answer every query from the same ten people and twelve orders --
+so a rewrite that is wrong only when a column is entirely NULL, or when a join
+key repeats, or when a table has one row, never meets the case that breaks it.
+
+Every property is the same shape: **the optimizer must not change the answer.**
+Two tables of one to three columns, up to six rows, twenty percent NULLs, and a
+query built from the kinds that were generated -- a filter with a nested
+`AND`/`OR`/`NOT` tree, a grouped aggregate, one of the four join types with the
+filter on either side, a grouped join, a correlated `EXISTS` or an uncorrelated
+`IN`. Each runs optimized and unoptimized, and then again with pruning off,
+encodings off, and the scalar evaluator. All of them must agree, errors
+included.
+
+Generation is type-directed so a failure is a real failure rather than a type
+error: a float always carries a fraction so the CSV loader cannot infer an
+integer, text always starts with a letter so it is not a number or a date, and
+every column has at least one non-NULL value so the loader has evidence for a
+type. A shape that does not fit the column it landed on falls back to one that
+does rather than collapsing the predicate -- before that, two thirds of the
+generated queries came out with no `WHERE` clause at all, and the test was
+passing for the wrong reason. `the_generator_covers_the_shapes` now asserts the
+coverage directly, because a generator that quietly stops generating is
+indistinguishable from a suite that quietly stops testing.
+
+Four hundred thousand cases have found nothing. That is the expected result for
+an engine already differentially tested against SQLite on a thousand records --
+and the reason to keep it is the next rule, not this one.
+
+`proptest` is worth its dependency for the shrinking: a failure arrives as the
+smallest table and query that still reproduce it, and it is written to
+`tests/property.proptest-regressions` and rerun first on every later run.
+
 ### Not yet
 
-Property tests (proptest) generating random *plans* and asserting the optimizer
-preserves semantics -- that becomes possible once there is an optimizer to
-disable. The query fuzzer above is the value-level half of the same idea, and it
-already covers the expression semantics that the plan-level tests would rely on.
+Property tests generating random *plans* rather than random SQL -- asserting
+that a rule applied to an arbitrary plan preserves semantics, without going
+through the parser at all.
 
 `cargo check -p engine --target wasm32-unknown-unknown` passes: the engine crate
 has no dependencies and no host assumptions. Wall-clock timing reports zero on

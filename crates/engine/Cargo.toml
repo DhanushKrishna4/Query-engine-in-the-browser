@@ -6,4 +6,18 @@ license.workspace = true
 
 # The engine crate is deliberately dependency-free. It must build and run
 # natively (and later on wasm32-unknown-unknown) with nothing but core + std.
+# CI asserts this with `cargo tree --edges normal`, which is why the test-only
+# dependencies below do not violate it: nothing under `[dev-dependencies]` is
+# linked into the library, the CLI, or the wasm module.
 [dependencies]
+
+[dev-dependencies]
+# Property tests: random tables and random queries, optimized against
+# unoptimized. Worth a dependency for the shrinking alone -- a failure arrives
+# as the smallest table and query that still reproduce it, which is the
+# difference between a bug report and a puzzle.
+proptest = "1"
+# Parser snapshot tests. The pretty-printed AST is reviewed once and frozen,
+# and `cargo insta` shows a diff rather than a wall of expected-vs-actual.
+insta = "1"
+

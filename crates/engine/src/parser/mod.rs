@@ -1070,26 +1070,27 @@ impl Parser {
 mod tests {
     use super::*;
 
-    /// Snapshot helper: parse, pretty-print, and compare against the expected
-    /// tree. Written by hand rather than with `insta` so the engine crate stays
-    /// dependency-free; the shape of the assertion is the same.
-    fn snapshot(sql: &str, expected: &str) {
+    /// Parse and pretty-print: SQL in, AST out.
+    ///
+    /// The trees below are inline `insta` snapshots -- expected values that
+    /// live beside the SQL they describe, reviewed once and frozen, and
+    /// updated by `cargo insta review` rather than by hand when the printer
+    /// changes. `insta` is a dev-dependency, so `cargo tree --edges normal`
+    /// still reports that the engine has none.
+    fn parsed(sql: &str) -> String {
         let stmt = parse(sql).unwrap_or_else(|e| panic!("{}", e.render(sql)));
-        let got = ast::pretty(&stmt);
-        assert_eq!(got.trim_end(), expected.trim_end(), "\n--- got ---\n{got}");
+        ast::pretty(&stmt).trim_end().to_string()
     }
 
-    fn expr_snapshot(sql: &str, expected: &str) {
-        snapshot(
-            &format!("SELECT {sql}"),
-            &format!("Query\n  Select\n    Projection\n      Item\n{}", indent(expected, 4)),
-        );
-    }
-
-    fn indent(text: &str, levels: usize) -> String {
-        let pad = "  ".repeat(levels);
-        text.lines()
-            .map(|l| format!("{pad}{l}"))
+    /// The same, for a bare expression: the `SELECT` scaffolding is parsed and
+    /// then stripped, so the snapshot is the expression's tree and nothing
+    /// else. Four lines of `Query / Select / Projection / Item`, and four
+    /// levels of indentation with them.
+    fn parsed_expr(sql: &str) -> String {
+        parsed(&format!("SELECT {sql}"))
+            .lines()
+            .skip(4)
+            .map(|l| l.strip_prefix("        ").unwrap_or(l))
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -1100,191 +1101,161 @@ mod tests {
 
     #[test]
     fn simple_filtered_scan() {
-        snapshot(
-            "SELECT a FROM t WHERE b > 5",
-            "\
-Query
-  Select
-    Projection
-      Item
-        Column a
-    From
-      Table t
-    Where
-      BinaryOp >
-        Column b
-        Literal 5",
-        );
+        insta::assert_snapshot!(parsed("SELECT a FROM t WHERE b > 5"), @r"
+        Query
+          Select
+            Projection
+              Item
+                Column a
+            From
+              Table t
+            Where
+              BinaryOp >
+                Column b
+                Literal 5
+        ");
     }
 
     #[test]
     fn wildcards_and_aliases() {
-        snapshot(
-            "SELECT *, t.*, a AS x, b y FROM tbl AS t",
-            "\
-Query
-  Select
-    Projection
-      *
-      t.*
-      Alias x
-        Column a
-      Alias y
-        Column b
-    From
-      Table tbl AS t",
-        );
+        insta::assert_snapshot!(parsed("SELECT *, t.*, a AS x, b y FROM tbl AS t"), @r"
+        Query
+          Select
+            Projection
+              *
+              t.*
+              Alias x
+                Column a
+              Alias y
+                Column b
+            From
+              Table tbl AS t
+        ");
     }
 
     #[test]
     fn arithmetic_precedence_and_left_associativity() {
         // * binds tighter than +, and - is left-associative.
-        expr_snapshot(
-            "1 + 2 * 3",
-            "\
-BinaryOp +
-  Literal 1
-  BinaryOp *
-    Literal 2
-    Literal 3",
-        );
-        expr_snapshot(
-            "1 - 2 - 3",
-            "\
-BinaryOp -
-  BinaryOp -
-    Literal 1
-    Literal 2
-  Literal 3",
-        );
+        insta::assert_snapshot!(parsed_expr("1 + 2 * 3"), @r"
+        BinaryOp +
+          Literal 1
+          BinaryOp *
+            Literal 2
+            Literal 3
+        ");
+        insta::assert_snapshot!(parsed_expr("1 - 2 - 3"), @r"
+        BinaryOp -
+          BinaryOp -
+            Literal 1
+            Literal 2
+          Literal 3
+        ");
     }
 
     #[test]
     fn logical_precedence() {
         // AND binds tighter than OR.
-        expr_snapshot(
-            "a OR b AND c",
-            "\
-BinaryOp OR
-  Column a
-  BinaryOp AND
-    Column b
-    Column c",
-        );
+        insta::assert_snapshot!(parsed_expr("a OR b AND c"), @r"
+        BinaryOp OR
+          Column a
+          BinaryOp AND
+            Column b
+            Column c
+        ");
         // NOT binds looser than comparison but tighter than AND.
-        expr_snapshot(
-            "NOT a = 1 AND b",
-            "\
-BinaryOp AND
-  UnaryOp NOT
-    BinaryOp =
-      Column a
-      Literal 1
-  Column b",
-        );
+        insta::assert_snapshot!(parsed_expr("NOT a = 1 AND b"), @r"
+        BinaryOp AND
+          UnaryOp NOT
+            BinaryOp =
+              Column a
+              Literal 1
+          Column b
+        ");
     }
 
     #[test]
     fn unary_minus_binds_tighter_than_arithmetic() {
-        expr_snapshot(
-            "-a + b",
-            "\
-BinaryOp +
-  UnaryOp -
-    Column a
-  Column b",
-        );
+        insta::assert_snapshot!(parsed_expr("-a + b"), @r"
+        BinaryOp +
+          UnaryOp -
+            Column a
+          Column b
+        ");
         // `a-1` is subtraction, not `a` followed by the literal -1.
-        expr_snapshot(
-            "a-1",
-            "\
-BinaryOp -
-  Column a
-  Literal 1",
-        );
+        insta::assert_snapshot!(parsed_expr("a-1"), @r"
+        BinaryOp -
+          Column a
+          Literal 1
+        ");
     }
 
     #[test]
     fn between_does_not_swallow_a_following_and() {
-        expr_snapshot(
-            "a BETWEEN 1 AND 2 AND c",
-            "\
-BinaryOp AND
-  Between
-    Column a
-    low
-      Literal 1
-    high
-      Literal 2
-  Column c",
-        );
+        insta::assert_snapshot!(parsed_expr("a BETWEEN 1 AND 2 AND c"), @r"
+        BinaryOp AND
+          Between
+            Column a
+            low
+              Literal 1
+            high
+              Literal 2
+          Column c
+        ");
     }
 
     #[test]
     fn negated_postfix_operators() {
-        expr_snapshot(
-            "a NOT IN (1, 2)",
-            "\
-NotInList
-  Column a
-  list
-    Literal 1
-    Literal 2",
-        );
-        expr_snapshot(
-            "a NOT LIKE 'x%'",
-            "\
-NotLike
-  Column a
-  pattern
-    Literal 'x%'",
-        );
-        expr_snapshot(
-            "a IS NOT NULL",
-            "\
-IsNotNull
-  Column a",
-        );
+        insta::assert_snapshot!(parsed_expr("a NOT IN (1, 2)"), @r"
+        NotInList
+          Column a
+          list
+            Literal 1
+            Literal 2
+        ");
+        insta::assert_snapshot!(parsed_expr("a NOT LIKE 'x%'"), @r"
+        NotLike
+          Column a
+          pattern
+            Literal 'x%'
+        ");
+        insta::assert_snapshot!(parsed_expr("a IS NOT NULL"), @r"
+        IsNotNull
+          Column a
+        ");
     }
 
     #[test]
     fn case_cast_and_functions() {
-        expr_snapshot(
-            "CASE WHEN a > 1 THEN 'big' ELSE 'small' END",
-            "\
-Case
-  when
-    BinaryOp >
-      Column a
-      Literal 1
-  then
-    Literal 'big'
-  else
-    Literal 'small'",
-        );
-        expr_snapshot(
-            "CAST(a AS BIGINT)",
-            "\
-Cast to INT64
-  Column a",
-        );
-        expr_snapshot(
-            "COUNT(*)",
-            "\
-Function COUNT
-  *",
-        );
-        expr_snapshot(
-            "COUNT(DISTINCT a)",
-            "\
-Function COUNT distinct
-  Column a",
-        );
+        insta::assert_snapshot!(parsed_expr("CASE WHEN a > 1 THEN 'big' ELSE 'small' END"), @r"
+        Case
+          when
+            BinaryOp >
+              Column a
+              Literal 1
+          then
+            Literal 'big'
+          else
+            Literal 'small'
+        ");
+        insta::assert_snapshot!(parsed_expr("CAST(a AS BIGINT)"), @r"
+        Cast to INT64
+          Column a
+        ");
+        insta::assert_snapshot!(parsed_expr("COUNT(*)"), @r"
+        Function COUNT
+          *
+        ");
+        insta::assert_snapshot!(parsed_expr("COUNT(DISTINCT a)"), @r"
+        Function COUNT distinct
+          Column a
+        ");
     }
 
     #[test]
     fn qualified_columns() {
-        expr_snapshot("t.a", "Column t.a");
+        insta::assert_snapshot!(parsed_expr("t.a"), @r"
+        Column t.a
+        ");
     }
 
     #[test]
@@ -1302,36 +1273,32 @@ Function COUNT distinct
 
     #[test]
     fn from_less_select_is_allowed() {
-        snapshot(
-            "SELECT 1 + 1",
-            "\
-Query
-  Select
-    Projection
-      Item
-        BinaryOp +
-          Literal 1
-          Literal 1",
-        );
+        insta::assert_snapshot!(parsed("SELECT 1 + 1"), @r"
+        Query
+          Select
+            Projection
+              Item
+                BinaryOp +
+                  Literal 1
+                  Literal 1
+        ");
     }
 
     #[test]
     fn limit_and_offset() {
-        snapshot(
-            "SELECT a FROM t LIMIT 10 OFFSET 5",
-            "\
-Query
-  Select
-    Projection
-      Item
-        Column a
-    From
-      Table t
-  Limit
-    Literal 10
-  Offset
-    Literal 5",
-        );
+        insta::assert_snapshot!(parsed("SELECT a FROM t LIMIT 10 OFFSET 5"), @r"
+        Query
+          Select
+            Projection
+              Item
+                Column a
+            From
+              Table t
+          Limit
+            Literal 10
+          Offset
+            Literal 5
+        ");
     }
 
     #[test]
@@ -1374,60 +1341,54 @@ Query
 
     #[test]
     fn joins_and_grouping_parse() {
-        snapshot(
-            "SELECT a.x, b.y FROM a LEFT OUTER JOIN b ON a.id = b.id",
-            "\
-Query
-  Select
-    Projection
-      Item
-        Column a.x
-      Item
-        Column b.y
-    From
-      Table a
-      LEFT join
-        Table b
-        on
-          BinaryOp =
-            Column a.id
-            Column b.id",
-        );
+        insta::assert_snapshot!(parsed("SELECT a.x, b.y FROM a LEFT OUTER JOIN b ON a.id = b.id"), @r"
+        Query
+          Select
+            Projection
+              Item
+                Column a.x
+              Item
+                Column b.y
+            From
+              Table a
+              LEFT join
+                Table b
+                on
+                  BinaryOp =
+                    Column a.id
+                    Column b.id
+        ");
 
         // A comma between FROM items is a cross join.
-        snapshot(
-            "SELECT * FROM a, b",
-            "\
-Query
-  Select
-    Projection
-      *
-    From
-      Table a
-      Table b",
-        );
+        insta::assert_snapshot!(parsed("SELECT * FROM a, b"), @r"
+        Query
+          Select
+            Projection
+              *
+            From
+              Table a
+              Table b
+        ");
 
-        snapshot(
-            "SELECT city, COUNT(*) FROM t GROUP BY city HAVING COUNT(*) > 1",
-            "\
-Query
-  Select
-    Projection
-      Item
-        Column city
-      Item
-        Function COUNT
-          *
-    From
-      Table t
-    GroupBy
-      Column city
-    Having
-      BinaryOp >
-        Function COUNT
-          *
-        Literal 1",
-        );
+        insta::assert_snapshot!(parsed("SELECT city, COUNT(*) FROM t GROUP BY city HAVING COUNT(*) > 1"), @r"
+        Query
+          Select
+            Projection
+              Item
+                Column city
+              Item
+                Function COUNT
+                  *
+            From
+              Table t
+            GroupBy
+              Column city
+            Having
+              BinaryOp >
+                Function COUNT
+                  *
+                Literal 1
+        ");
     }
 
     #[test]
@@ -1445,181 +1406,159 @@ Query
 
     #[test]
     fn ordering_and_set_operations_parse() {
-        snapshot(
-            "SELECT a FROM t ORDER BY b DESC NULLS FIRST, 2",
-            "\
-Query
-  Select
-    Projection
-      Item
-        Column a
-    From
-      Table t
-  OrderBy
-    DESC NULLS FIRST
-      Column b
-    ASC
-      Literal 2",
-        );
-
-        snapshot(
-            "SELECT a FROM t UNION ALL SELECT b FROM u",
-            "\
-Query
-  UNION ALL
-    Select
-      Projection
-        Item
-          Column a
-      From
-        Table t
-    Select
-      Projection
-        Item
-          Column b
-      From
-        Table u",
-        );
-
-        // Set operators are left-associative and share one precedence.
-        snapshot(
-            "SELECT a FROM t INTERSECT SELECT b FROM u EXCEPT SELECT c FROM v",
-            "\
-Query
-  EXCEPT
-    INTERSECT
-      Select
-        Projection
-          Item
-            Column a
-        From
-          Table t
-      Select
-        Projection
-          Item
-            Column b
-        From
-          Table u
-    Select
-      Projection
-        Item
-          Column c
-      From
-        Table v",
-        );
-    }
-
-    #[test]
-    fn window_functions_parse() {
-        expr_snapshot(
-            "ROW_NUMBER() OVER (PARTITION BY a ORDER BY b DESC)",
-            "\
-Function ROW_NUMBER over
-  partition by
-    Column a
-  order by
-    Column b",
-        );
-
-        expr_snapshot(
-            "SUM(x) OVER (ORDER BY y ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)",
-            "\
-Function SUM over
-  Column x
-  order by
-    Column y
-  frame rows n preceding to current row",
-        );
-
-        // `ROWS <bound>` is shorthand for `BETWEEN <bound> AND CURRENT ROW`.
-        expr_snapshot(
-            "COUNT(*) OVER (ROWS UNBOUNDED PRECEDING)",
-            "\
-Function COUNT over
-  *
-  frame rows unbounded preceding to current row",
-        );
-    }
-
-    #[test]
-    fn subqueries_parse() {
-        expr_snapshot(
-            "EXISTS (SELECT 1 FROM t)",
-            "\
-Exists
-  Query
-    Select
-      Projection
-        Item
-          Literal 1
-      From
-        Table t",
-        );
-
-        // `NOT EXISTS` is one operator rather than a negation of EXISTS, so
-        // decorrelation can see an anti-join directly.
-        expr_snapshot(
-            "NOT EXISTS (SELECT 1 FROM t)",
-            "\
-NotExists
-  Query
-    Select
-      Projection
-        Item
-          Literal 1
-      From
-        Table t",
-        );
-
-        expr_snapshot(
-            "a NOT IN (SELECT b FROM t)",
-            "\
-NotInSubquery
-  Column a
-  Query
-    Select
-      Projection
-        Item
-          Column b
-      From
-        Table t",
-        );
-
-        expr_snapshot(
-            "(SELECT MAX(b) FROM t)",
-            "\
-ScalarSubquery
-  Query
-    Select
-      Projection
-        Item
-          Function MAX
-            Column b
-      From
-        Table t",
-        );
-    }
-
-    #[test]
-    fn derived_tables_parse_and_require_an_alias() {
-        snapshot(
-            "SELECT x.a FROM (SELECT a FROM t) AS x",
-            "\
-Query
-  Select
-    Projection
-      Item
-        Column x.a
-    From
-      Derived AS x
+        insta::assert_snapshot!(parsed("SELECT a FROM t ORDER BY b DESC NULLS FIRST, 2"), @r"
         Query
           Select
             Projection
               Item
                 Column a
             From
-              Table t",
-        );
+              Table t
+          OrderBy
+            DESC NULLS FIRST
+              Column b
+            ASC
+              Literal 2
+        ");
+
+        insta::assert_snapshot!(parsed("SELECT a FROM t UNION ALL SELECT b FROM u"), @r"
+        Query
+          UNION ALL
+            Select
+              Projection
+                Item
+                  Column a
+              From
+                Table t
+            Select
+              Projection
+                Item
+                  Column b
+              From
+                Table u
+        ");
+
+        // Set operators are left-associative and share one precedence.
+        insta::assert_snapshot!(parsed("SELECT a FROM t INTERSECT SELECT b FROM u EXCEPT SELECT c FROM v"), @r"
+        Query
+          EXCEPT
+            INTERSECT
+              Select
+                Projection
+                  Item
+                    Column a
+                From
+                  Table t
+              Select
+                Projection
+                  Item
+                    Column b
+                From
+                  Table u
+            Select
+              Projection
+                Item
+                  Column c
+              From
+                Table v
+        ");
+    }
+
+    #[test]
+    fn window_functions_parse() {
+        insta::assert_snapshot!(parsed_expr("ROW_NUMBER() OVER (PARTITION BY a ORDER BY b DESC)"), @r"
+        Function ROW_NUMBER over
+          partition by
+            Column a
+          order by
+            Column b
+        ");
+
+        insta::assert_snapshot!(parsed_expr("SUM(x) OVER (ORDER BY y ROWS BETWEEN 2 PRECEDING AND CURRENT ROW)"), @r"
+        Function SUM over
+          Column x
+          order by
+            Column y
+          frame rows n preceding to current row
+        ");
+
+        // `ROWS <bound>` is shorthand for `BETWEEN <bound> AND CURRENT ROW`.
+        insta::assert_snapshot!(parsed_expr("COUNT(*) OVER (ROWS UNBOUNDED PRECEDING)"), @r"
+        Function COUNT over
+          *
+          frame rows unbounded preceding to current row
+        ");
+    }
+
+    #[test]
+    fn subqueries_parse() {
+        insta::assert_snapshot!(parsed_expr("EXISTS (SELECT 1 FROM t)"), @r"
+        Exists
+          Query
+            Select
+              Projection
+                Item
+                  Literal 1
+              From
+                Table t
+        ");
+
+        // `NOT EXISTS` is one operator rather than a negation of EXISTS, so
+        // decorrelation can see an anti-join directly.
+        insta::assert_snapshot!(parsed_expr("NOT EXISTS (SELECT 1 FROM t)"), @r"
+        NotExists
+          Query
+            Select
+              Projection
+                Item
+                  Literal 1
+              From
+                Table t
+        ");
+
+        insta::assert_snapshot!(parsed_expr("a NOT IN (SELECT b FROM t)"), @r"
+        NotInSubquery
+          Column a
+          Query
+            Select
+              Projection
+                Item
+                  Column b
+              From
+                Table t
+        ");
+
+        insta::assert_snapshot!(parsed_expr("(SELECT MAX(b) FROM t)"), @r"
+        ScalarSubquery
+          Query
+            Select
+              Projection
+                Item
+                  Function MAX
+                    Column b
+              From
+                Table t
+        ");
+    }
+
+    #[test]
+    fn derived_tables_parse_and_require_an_alias() {
+        insta::assert_snapshot!(parsed("SELECT x.a FROM (SELECT a FROM t) AS x"), @r"
+        Query
+          Select
+            Projection
+              Item
+                Column x.a
+            From
+              Derived AS x
+                Query
+                  Select
+                    Projection
+                      Item
+                        Column a
+                    From
+                      Table t
+        ");
 
         let e = parse_err("SELECT * FROM (SELECT 1)");
         assert!(e.message.contains("needs an alias"), "{}", e.message);

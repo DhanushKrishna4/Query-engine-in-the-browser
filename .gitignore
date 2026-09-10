@@ -26,3 +26,7 @@ __pycache__/
 *.pyc
 
 .DS_Store
+
+# insta writes these while a snapshot is pending review.
+*.pending-snap
+*.snap.new

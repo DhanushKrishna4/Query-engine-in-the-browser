@@ -27,7 +27,8 @@ let wasm: { memory: WebAssembly.Memory };
 let engine: QueryEngine;
 let editor: SqlEditor;
 let storageTable = "people";
-let wasmSize = 0;
+/** The `.wasm`'s size, and whether the server compressed it on the way. */
+let wasmSize = { bytes: 0, compressed: false };
 let traceSteps: TraceStep[] = [];
 let indexChoice: { table: string; column: string } | null = null;
 
@@ -1250,7 +1251,11 @@ async function boot() {
     });
   }
 
-  $("build").textContent = `wasm module ${(wasmSize / 1024).toFixed(0)} KiB · engine built from scratch, zero dependencies`;
+  // A HEAD to a compressed response reports the *transfer* size, which is the
+  // honest number for a page to quote but is not the module's size. Say which.
+  $("build").textContent =
+    `wasm module ${humanBytes(wasmSize.bytes)}${wasmSize.compressed ? " over the wire" : ""}` +
+    ` · engine built from scratch, zero dependencies`;
   run();
 }
 
@@ -1403,7 +1408,12 @@ function run() {
 }
 
 fetch(wasmUrl, { method: "HEAD" })
-  .then((r) => { wasmSize = Number(r.headers.get("content-length") ?? 0); })
+  .then((r) => {
+    wasmSize = {
+      bytes: Number(r.headers.get("content-length") ?? 0),
+      compressed: r.headers.get("content-encoding") !== null,
+    };
+  })
   .catch(() => {});
 
 boot().catch((e) => {
