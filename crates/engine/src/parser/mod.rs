@@ -748,6 +748,34 @@ impl Parser {
                 self.advance();
                 Ok(Expr::Literal { value: Literal::String(tok.text), span: tok.span })
             }
+            // `DATE '1994-01-01'` and `TIMESTAMP '2024-01-02 03:04:05'`: a
+            // type name immediately followed by a string literal. Standard SQL
+            // spells a date this way and every TPC-H query uses it, so a parser
+            // that only accepts `CAST('1994-01-01' AS DATE)` rejects the query
+            // as written.
+            //
+            // Only when a string really follows. `DATE` is also a type name
+            // inside `CAST(... AS DATE)`, and it is a legal column name in a
+            // quoted position, so consuming the keyword unconditionally here
+            // would break both.
+            TokenKind::Keyword(kw @ (Keyword::Date | Keyword::Timestamp))
+                if matches!(self.peek_ahead(1).kind, TokenKind::String) =>
+            {
+                self.advance();
+                let text = self.advance();
+                let span = tok.span.merge(text.span);
+                Ok(Expr::Cast {
+                    expr: Box::new(Expr::Literal {
+                        value: Literal::String(text.text),
+                        span: text.span,
+                    }),
+                    data_type: match kw {
+                        Keyword::Date => DataType::Date32,
+                        _ => DataType::Timestamp,
+                    },
+                    span,
+                })
+            }
             TokenKind::Keyword(Keyword::Null) => {
                 self.advance();
                 Ok(Expr::Literal { value: Literal::Null, span: tok.span })
@@ -1255,6 +1283,29 @@ mod tests {
     fn qualified_columns() {
         insta::assert_snapshot!(parsed_expr("t.a"), @r"
         Column t.a
+        ");
+    }
+
+    /// `DATE '...'` is a cast, spelled the way the standard spells it.
+    ///
+    /// Desugaring to `CAST` in the parser rather than adding a literal kind
+    /// keeps one code path for the conversion and its error message. The
+    /// keyword is only consumed when a string really follows: `DATE` is also a
+    /// type name, and `CAST(x AS DATE)` has to keep working.
+    #[test]
+    fn typed_literals_parse_as_casts() {
+        insta::assert_snapshot!(parsed_expr("DATE '1994-01-01'"), @r"
+        Cast to DATE32
+          Literal '1994-01-01'
+        ");
+        insta::assert_snapshot!(parsed_expr("TIMESTAMP '2024-01-02 03:04:05'"), @r"
+        Cast to TIMESTAMP
+          Literal '2024-01-02 03:04:05'
+        ");
+        // The same keyword, still a type name.
+        insta::assert_snapshot!(parsed_expr("CAST(x AS DATE)"), @r"
+        Cast to DATE32
+          Column x
         ");
     }
 

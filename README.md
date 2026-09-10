@@ -1196,6 +1196,15 @@ the character before it.
   see below -- but the work is still on it, and a worker is the real fix. The
   clock already reaches `performance` through the global rather than through
   `window` so that it will work there.
+- **And on one thread.** GitHub Pages cannot set the COOP/COEP headers
+  `SharedArrayBuffer` needs, so wasm threads are not available here at all.
+  What the design does buy is that adding them later is a plan change rather
+  than a storage rewrite: a pull-based operator returning batches is the shape
+  an exchange operator wraps, and `tests/thread_safety.rs` asserts that every
+  type such an operator would move or share -- batches, columns, bitmaps,
+  tables, row groups, plans, expressions, statistics -- is `Send + Sync`. An
+  `Rc` slipped into a column would break that silently and be found much
+  later, so it is a test rather than an intention.
 - **The pipeline shows batches, not their contents.** Watching a selection
   vector narrow batch by batch would need per-batch events rather than
   per-operator totals, which is a change to the `Operator` trait rather than to

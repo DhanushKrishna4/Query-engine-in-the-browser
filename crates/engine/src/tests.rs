@@ -280,6 +280,24 @@ fn string_literal_is_folded_into_a_date_comparison() {
 }
 
 #[test]
+fn typed_literals_carry_their_type() {
+    let e = engine();
+    // The standard spelling, which is what TPC-H and every other written-down
+    // query uses. SQLite has no such syntax, so this cannot live in the
+    // differential corpus and gets a test of its own.
+    assert_eq!(
+        run(&e, "SELECT name FROM people WHERE hired > DATE '2002-01-01'"),
+        vec![vec!["Alan"], vec!["Barbara"]]
+    );
+    assert_eq!(one(&e, "SELECT TIMESTAMP '2024-01-02 03:04:05'"), "2024-01-02 03:04:05");
+    // Still a type name where a type name belongs.
+    assert_eq!(one(&e, "SELECT CAST('2001-02-03' AS DATE)"), "2001-02-03");
+    // And the text still has to be a date. Reported when the cast runs, with
+    // the value that could not be converted named.
+    assert!(err(&e, "SELECT DATE 'not-a-date'").contains("cannot cast value `not-a-date`"));
+}
+
+#[test]
 fn implicit_numeric_widening() {
     let e = engine();
     // age is INT32, score is FLOAT64; comparing them widens to FLOAT64.
