@@ -402,6 +402,43 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string): T => {
 const message = (e: unknown): string =>
   e instanceof Error ? e.message : String(e);
 
+/**
+ * Draw the pipeline panels for one query, as far as it gets.
+ *
+ * Parsing and planning are separate stages and fail separately: `SELECT ctiy
+ * FROM people` parses fine and only fails to bind, so its tokens and parse
+ * tree are real and worth showing while its plan does not exist. Each panel
+ * says which of those it is rather than keeping the last query's answer.
+ */
+async function renderStages(sql: string) {
+  try {
+    const parsed = await engine.parse(sql);
+    renderTokens(parsed);
+    renderAst(parsed);
+  } catch {
+    clearPanels(["tokens", "ast"], "the query could not be tokenized");
+    clearPanels(["plan", "trace", "physical"], "no plan: the query did not parse");
+    return;
+  }
+  try {
+    const planned = await engine.plan(sql);
+    renderPlan(planned);
+    renderTrace(planned);
+    await renderPhysical(sql);
+  } catch {
+    // Parsed but did not bind: an unknown column or table. The error banner
+    // above says which; these panels just must not lie about having a plan.
+    clearPanels(["plan", "trace", "physical"], "no plan: the query did not bind");
+  }
+}
+
+/** Empty some panels, with a line saying why rather than nothing at all. */
+function clearPanels(names: string[], why = "") {
+  for (const name of names) {
+    $(`tab-${name}`).innerHTML = why ? `<p class="empty">${escapeHtml(why)}</p>` : "";
+  }
+}
+
 /** The header row for a result, built once whether or not it streams. */
 function resultTable(meta: OutcomeMeta): HTMLTableElement {
   const table = document.createElement("table");
@@ -700,26 +737,51 @@ async function renderPhysical(sql: string) {
   body.innerHTML = `<div class="phys">${lines.join("")}</div>`;
 }
 
-/** Collect the rel ids in a subtree, so the whole of it can be highlighted. */
-function subtreeRels(
-  node: PlanNode,
-  target: number,
-  found = new Set<number>(),
-  inside = false
-): Set<number> {
-  const here = inside || node.rel === target;
-  if (here) found.add(node.rel);
-  for (const child of node.children) subtreeRels(child, target, found, here);
-  return found;
+/** Every node in a plan, by the relation id the binder gave it. */
+function nodesByRel(node: PlanNode, into = new Map<number, string>()): Map<number, string> {
+  into.set(node.rel, node.label);
+  for (const child of node.children) nodesByRel(child, into);
+  return into;
+}
+
+/**
+ * Which nodes a rewrite actually changed.
+ *
+ * Not the subtree the rule *declared* it fired at. Some rules fire at the root
+ * -- projection pushdown rewrites the column requirements of the whole plan
+ * top-down -- and highlighting everything under the root highlights the entire
+ * tree, which tells the reader nothing. This compares the two plans instead: a
+ * node is marked when its own text differs, or when it exists in one plan and
+ * not the other.
+ *
+ * Relation ids are what make that comparison possible, and are why the binder
+ * assigns them. A rewrite moves and rewrites nodes but does not renumber them.
+ */
+function changedRels(before: PlanNode, after: PlanNode): Set<number> {
+  const a = nodesByRel(before);
+  const b = nodesByRel(after);
+  const changed = new Set<number>();
+  for (const [rel, label] of a) {
+    if (!b.has(rel) || b.get(rel) !== label) changed.add(rel);
+  }
+  for (const [rel, label] of b) {
+    if (!a.has(rel) || a.get(rel) !== label) changed.add(rel);
+  }
+  return changed;
 }
 
 /** Render a plan as an indented tree, marking the subtree a rule fired at. */
-function renderPlanTree(root: PlanNode, target: number): string {
-  const marked = target === null || target === undefined ? new Set() : subtreeRels(root, target);
-  const lines = [];
-  (function walk(node, depth) {
-    const cls =
-      node.rel === target ? "plan-node target" : marked.has(node.rel) ? "plan-node changed" : "plan-node";
+function renderPlanTree(root: PlanNode, changed: Set<number>, target: number): string {
+  const lines: string[] = [];
+  (function walk(node: PlanNode, depth: number) {
+    // The node the rule named gets the stronger mark, but only if it is one of
+    // the nodes that actually moved. A rule that fires at the root and rewrites
+    // its children should light up the children.
+    const cls = !changed.has(node.rel)
+      ? "plan-node"
+      : node.rel === target
+        ? "plan-node target"
+        : "plan-node changed";
     const arrow = depth > 0 ? "-> " : "";
     lines.push(`<div class="${cls}">${"  ".repeat(depth)}${arrow}${escapeHtml(node.label)}</div>`);
     node.children.forEach((child) => walk(child, depth + 1));
@@ -754,9 +816,11 @@ function renderTrace(planned: PlanInfo) {
     const step = traceSteps[n - 1];
     $("step-label").innerHTML =
       `step <b>${n}</b> of ${traceSteps.length} &nbsp;·&nbsp; <b>${escapeHtml(step.rule)}</b> at #${step.target}`;
+    const changed = changedRels(step.before, step.after);
     $("step-view").innerHTML =
-      `<div class="side-by-side"><div><h4>before</h4>${renderPlanTree(step.before, step.target)}</div>` +
-      `<div><h4>after</h4>${renderPlanTree(step.after, step.target)}</div></div>`;
+      `<div class="side-by-side">` +
+      `<div><h4>before</h4>${renderPlanTree(step.before, changed, step.target)}</div>` +
+      `<div><h4>after</h4>${renderPlanTree(step.after, changed, step.target)}</div></div>`;
     slider.value = String(n);
   };
   slider.addEventListener("input", () => show(Number(slider.value)));
@@ -1514,26 +1578,17 @@ async function runQuery() {
     timing.textContent =
       `${meta.num_rows.toLocaleString()} row${meta.num_rows === 1 ? "" : "s"} in ${meta.elapsed_ms.toFixed(3)} ms`;
 
-    try {
-      // Two calls, because they are two stages: `parse` stops before the
-      // binder and `plan` runs the optimizer.
-      const parsed = await engine.parse(sql);
-      renderTokens(parsed);
-      renderAst(parsed);
-      const planned = await engine.plan(sql);
-      renderPlan(planned);
-      renderTrace(planned);
-      await renderPhysical(sql);
-    } catch {
-      // A query can execute and still not re-plan (it cannot, in practice) --
-      // but the results are already rendered, so a plan failure must not lose
-      // them.
-    }
+    await renderStages(sql);
   } catch (e) {
     error.hidden = false;
     error.textContent = message(e);
     body.textContent = "";
     timing.textContent = "";
+    // The panels below describe a query, and it is no longer this one. Showing
+    // the last successful query's plan under an error banner about a different
+    // one reads as though the plan belongs to the broken query.
+    await renderStages(sql);
+    clearPanels(["pipeline"]);
   } finally {
     running = false;
     $<HTMLButtonElement>("run").disabled = false;

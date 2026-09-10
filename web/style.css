@@ -129,13 +129,19 @@ footer { max-width: 1200px; margin: 2rem auto 0; padding: 0 1.5rem; color: var(-
 .slider-bar input[type=range] { flex: 1; min-width: 12rem; accent-color: var(--accent); }
 .slider-label { font-size: .8rem; color: var(--dim); }
 .slider-label b { color: var(--accent); font-weight: 600; }
-.plan-tree { font-size: .8rem; line-height: 1.6; }
+.plan-tree { font-size: .8rem; line-height: 1.6; overflow-x: auto; }
 .plan-node { white-space: pre; }
 /* The subtree the rule fired at. Highlighting it is why a trace step carries a
    node id instead of leaving the reader to diff two blocks of text. */
 .plan-node.changed { background: #1d3326; color: #cdf0da; border-radius: 3px; }
 .plan-node.target { background: var(--accent-dim); color: #eafff2; border-radius: 3px; font-weight: 600; }
-.side-by-side { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+/* `minmax(0, 1fr)`, not `1fr`. A plain `1fr` is `minmax(auto, 1fr)`, and the
+   `auto` minimum is the widest unbreakable line in the track -- so one long
+   `Scan table=... columns=[...]` blows its column past half the panel and
+   pushes the whole `after` pane off the right edge. Each pane scrolls on its
+   own instead. */
+.side-by-side { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; }
+.side-by-side > div { min-width: 0; }
 .side-by-side h4 { margin: 0 0 .4rem; font-size: .7rem; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); font-weight: 600; }
 @media (max-width: 800px) { .side-by-side { grid-template-columns: 1fr; } }
 
