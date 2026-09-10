@@ -26,6 +26,24 @@ fn repo_root() -> PathBuf {
 
 #[test]
 fn the_corpus_answers_the_same_from_parquet() {
+    run_corpus_against("");
+}
+
+/// The same corpus again, over files whose writer recorded no statistics.
+///
+/// A zone map with no bounds says nothing, and a reader that reads it as "this
+/// group holds no values" skips every row group in the file. Every query then
+/// returns nothing and no error -- which is how this failed the first time, on
+/// a real TPC-H file whose statistics were not merely absent but wrong. Nine
+/// hundred queries answered identically with and without the bounds is the
+/// claim worth making, because pruning is only ever allowed to be an
+/// optimization.
+#[test]
+fn the_corpus_answers_the_same_without_statistics() {
+    run_corpus_against("_no_stats");
+}
+
+fn run_corpus_against(suffix: &str) {
     let root = repo_root();
     let dir = root.join("tests/sqllogictest");
     let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
@@ -50,7 +68,8 @@ fn the_corpus_answers_the_same_from_parquet() {
                 let mut parts = rest.split_whitespace();
                 if let (Some(table), Some(csv)) = (parts.next(), parts.next()) {
                     let stem = Path::new(csv).file_stem().unwrap().to_string_lossy();
-                    rewritten.push_str(&format!("load {table} tests/parquet/{stem}.parquet\n"));
+                    rewritten
+                        .push_str(&format!("load {table} tests/parquet/{stem}{suffix}.parquet\n"));
                     swapped += 1;
                     continue;
                 }
@@ -79,7 +98,7 @@ fn the_corpus_answers_the_same_from_parquet() {
     }
 
     println!(
-        "parquet corpus: {} passed, {} skipped, {} failed across {} load(s)",
+        "parquet corpus{suffix}: {} passed, {} skipped, {} failed across {} load(s)",
         total.passed,
         total.skipped,
         total.failures.len(),

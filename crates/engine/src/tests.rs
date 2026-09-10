@@ -1418,7 +1418,7 @@ fn a_pruned_row_group_is_never_decoded() {
     assert_eq!(table.num_row_groups(), 8);
 
     let r = e
-        .execute("SELECT id, token FROM m WHERE id >= 300 AND id < 340")
+        .execute("SELECT id, token FROM m WHERE id >= 700 AND id < 740")
         .unwrap();
     assert_eq!(r.num_rows(), 40);
     let scan = &r.stats.children[0].children[0];
@@ -1426,16 +1426,21 @@ fn a_pruned_row_group_is_never_decoded() {
     assert_eq!(scan.stats.row_groups_scanned, 1);
     assert_eq!(scan.stats.row_groups_pruned, 7);
 
-    // Rows 300..339 live in group 2 (128 rows each). Exactly its two named
+    // Rows 700..739 live in group 5 (128 rows each). Exactly its two named
     // columns were decoded; the pruned groups hold nothing but their footer
-    // statistics. Group 0 is exempt -- registration sampled it to build the
-    // cost model's histograms.
-    assert_eq!(table.row_groups[2].resident_columns(), 2, "the scanned group");
-    for (i, rg) in table.row_groups.iter().enumerate() {
-        if i == 0 || i == 2 {
-            continue;
-        }
-        assert_eq!(rg.resident_columns(), 0, "row group {i} was decoded anyway");
+    // statistics.
+    //
+    // Groups 0, 2, 4 and 7 are exempt: registration decoded them, spread
+    // across the file, to build the cost model's histograms. The predicate is
+    // aimed at group 5 precisely because it is not one of them, so what this
+    // asserts is the scan's own behaviour and not the sampler's.
+    assert_eq!(table.row_groups[5].resident_columns(), 2, "the scanned group");
+    for i in [1, 3, 6] {
+        assert_eq!(
+            table.row_groups[i].resident_columns(),
+            0,
+            "row group {i} was decoded anyway"
+        );
     }
 }
 
@@ -1454,7 +1459,7 @@ fn zone_maps_come_from_the_footer_without_decoding() {
     assert_eq!(first.stats[0].max, Some(crate::types::ScalarValue::Int32(127)));
     // Null counts too -- `maybe` is null where `i % 7 == 3`, which over the
     // first 128 rows is 3, 10, ... 122: eighteen of them.
-    assert_eq!(first.stats[6].null_count, 18);
+    assert_eq!(first.stats[6].null_count, Some(18));
     assert!(table.row_groups.iter().all(|rg| rg.resident_columns() == 0));
 }
 

@@ -518,7 +518,8 @@ struct ZoneInfo {
     data_type: String,
     min: Option<String>,
     max: Option<String>,
-    nulls: usize,
+    /// `None` where the file recorded no null count -- unknown, not zero.
+    nulls: Option<usize>,
     distinct: Option<usize>,
     bloom: bool,
     /// The encoding this column is held in, and how much smaller it made it.

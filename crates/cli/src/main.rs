@@ -443,7 +443,9 @@ impl Repl {
                     f.data_type.to_string(),
                     show(&s.min),
                     show(&s.max),
-                    s.null_count,
+                    s.null_count
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "?".into()),
                     s.distinct_count_estimate
                         .map(|d| d.to_string())
                         .unwrap_or_else(|| ">8192".into()),

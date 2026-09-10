@@ -189,6 +189,14 @@ def main():
         t = csv_to_table(os.path.join(REPO_ROOT, "data", f"{name}.csv"))
         write(f"{name}.parquet", t, compression="snappy")
 
+    # The same data with the footer statistics left out. Plenty of writers do
+    # this, and a reader that mistakes "no bounds recorded" for "no values"
+    # prunes every row group and answers every query with nothing -- silently,
+    # which is why it gets a fixture of its own rather than a unit test.
+    for name in ("people", "orders"):
+        t = csv_to_table(os.path.join(REPO_ROOT, "data", f"{name}.csv"))
+        write(f"{name}_no_stats.parquet", t, compression="snappy", write_statistics=False)
+
     m = matrix_table()
 
     # -- compression --------------------------------------------------------

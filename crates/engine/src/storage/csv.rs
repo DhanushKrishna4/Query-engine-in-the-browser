@@ -492,7 +492,7 @@ mod tests {
         let s = &t.row_groups[1].stats[0];
         assert_eq!(s.min, Some(ScalarValue::Int32(4)));
         assert_eq!(s.max, Some(ScalarValue::Int32(7)));
-        assert_eq!(s.null_count, 0);
+        assert_eq!(s.null_count, Some(0));
         assert_eq!(s.distinct_count_estimate, Some(4));
     }
 

@@ -106,8 +106,13 @@ pub fn evaluate(
             let Some(s) = column_stats(expr, rel, stats) else {
                 return Certainty::Unknown;
             };
-            let has_null = s.null_count > 0;
-            let all_null = s.null_count == num_rows;
+            // Unknown means unknown: without a null count nothing about
+            // NULLs can be proved, and a group must be read.
+            let Some(nulls) = s.null_count else {
+                return Certainty::Unknown;
+            };
+            let has_null = nulls > 0;
+            let all_null = nulls == num_rows;
             match (negated, has_null, all_null) {
                 // IS NULL over a group with no NULLs.
                 (false, false, _) => Certainty::AlwaysFalse,
@@ -160,8 +165,13 @@ pub fn evaluate(
                 return Certainty::Unknown;
             };
             let (Some(min), Some(max)) = (&s.min, &s.max) else {
-                // Every value is NULL, so nothing can match.
-                return Certainty::AlwaysFalse;
+                // As in `compare_bounds`: no bounds is "all NULL" only when the
+                // null count says so, and "nothing is known" otherwise.
+                return if s.null_count == Some(num_rows) {
+                    Certainty::AlwaysFalse
+                } else {
+                    Certainty::Unknown
+                };
             };
             // If no candidate value falls inside the group's range, no row can
             // match -- and a NULL in the list does not change that, since an
@@ -228,14 +238,30 @@ fn compare_bounds(
         return Certainty::AlwaysFalse;
     }
     let (Some(min), Some(max)) = (&s.min, &s.max) else {
-        // No non-NULL values at all.
-        return Certainty::AlwaysFalse;
+        // Absent bounds mean one of two things, and they point opposite ways.
+        //
+        // If every value in the group is NULL there is genuinely nothing a
+        // comparison can be true of, and the group is skippable. If instead
+        // the bounds were never recorded -- a Parquet writer that omitted
+        // statistics, or a writer whose statistics contradicted themselves and
+        // were discarded on the way in -- then nothing whatsoever is known,
+        // and skipping the group deletes every row it holds.
+        //
+        // The second case is not hypothetical: reading it as the first made
+        // every query against such a file return nothing, silently.
+        return if s.null_count == Some(num_rows) {
+            Certainty::AlwaysFalse
+        } else {
+            Certainty::Unknown
+        };
     };
     let (Some(vs_min), Some(vs_max)) = (compare(v, min), compare(v, max)) else {
         // Not comparable (mismatched types, or NaN bounds).
         return Certainty::Unknown;
     };
-    let no_nulls = s.null_count == 0;
+    // `AlwaysTrue` claims every row passes, which a NULL would falsify --
+    // so an unrecorded null count has to be treated as "there may be some".
+    let no_nulls = s.null_count == Some(0);
     let all_same = compare(min, max) == Some(Ordering::Equal);
 
     use BinaryOperator::*;

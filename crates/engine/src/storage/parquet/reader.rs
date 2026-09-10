@@ -991,14 +991,121 @@ pub fn chunk_stats(
         return ColumnStats {
             min: None,
             max: None,
-            null_count: 0,
+            null_count: None,
             distinct_count_estimate: None,
         };
     };
+    let mut min = s.min_value.as_deref().and_then(|r| stat_value(r, leaf));
+    let mut max = s.max_value.as_deref().and_then(|r| stat_value(r, leaf));
+
+    // Statistics that contradict themselves are not statistics.
+    //
+    // Real files in the wild carry them: `parquet-rs` before 5.0 wrote byte
+    // array `min_value`/`max_value` in the order it happened to meet the
+    // values rather than in sorted order, so a column whose first two
+    // dictionary entries were `BUILDING` and `AUTOMOBILE` claims exactly that
+    // as its range. Trusting it makes `WHERE c_mktsegment = 'BUILDING'` return
+    // nothing, because the value sorts above a maximum that is not one --
+    // silent wrong answers, which is the worst failure a reader has.
+    //
+    // Sniffing `created_by` for known-bad writers is what some readers do; a
+    // bound that is impossible is a better test, because it needs no list and
+    // catches writers nobody has heard of yet. Both are dropped rather than
+    // swapped: a writer this confused has not earned the assumption that the
+    // pair is merely reversed.
+    if let (Some(lo), Some(hi)) = (&min, &max) {
+        if crate::types::compare(lo, hi) == Some(std::cmp::Ordering::Greater) {
+            min = None;
+            max = None;
+        }
+    }
+
     ColumnStats {
-        min: s.min_value.as_deref().and_then(|r| stat_value(r, leaf)),
-        max: s.max_value.as_deref().and_then(|r| stat_value(r, leaf)),
-        null_count: s.null_count.unwrap_or(0).clamp(0, num_rows as i64) as usize,
+        min,
+        max,
+        null_count: s.null_count.map(|n| n.clamp(0, num_rows as i64) as usize),
         distinct_count_estimate: s.distinct_count.filter(|d| *d >= 0).map(|d| d as usize),
+    }
+}
+
+#[cfg(test)]
+mod stats_tests {
+    use super::*;
+    use crate::storage::parquet::metadata::{Compression, Encoding, Statistics};
+    use crate::storage::Field;
+    use crate::types::{DataType, ScalarValue};
+
+    fn column(stats: Statistics) -> (ColumnMetaData, LeafColumn) {
+        let meta = ColumnMetaData {
+            physical_type: PhysicalType::ByteArray,
+            encodings: vec![Encoding::Plain],
+            path_in_schema: vec!["s".into()],
+            codec: Compression::Uncompressed,
+            num_values: 4,
+            total_uncompressed_size: 0,
+            total_compressed_size: 0,
+            data_page_offset: 4,
+            dictionary_page_offset: None,
+            statistics: Some(stats),
+        };
+        let leaf = LeafColumn {
+            field: Field::new("s", DataType::Utf8, true),
+            physical_type: PhysicalType::ByteArray,
+            type_length: None,
+            max_def_level: 1,
+            conversion: Conversion::Direct,
+        };
+        (meta, leaf)
+    }
+
+    #[test]
+    fn bounds_in_the_right_order_are_kept() {
+        let (meta, leaf) = column(Statistics {
+            min_value: Some(b"AUTOMOBILE".to_vec()),
+            max_value: Some(b"MACHINERY".to_vec()),
+            null_count: Some(1),
+            distinct_count: None,
+        });
+        let s = chunk_stats(&meta, &leaf, 4);
+        assert_eq!(s.min, Some(ScalarValue::Utf8("AUTOMOBILE".into())));
+        assert_eq!(s.max, Some(ScalarValue::Utf8("MACHINERY".into())));
+        assert_eq!(s.null_count, Some(1));
+    }
+
+    /// The shape `parquet-rs` 4.3.0 wrote for a dictionary-encoded string
+    /// column: whichever value it met first, not the smallest. A zone map built
+    /// from it prunes away rows that match.
+    #[test]
+    fn bounds_that_cross_are_discarded() {
+        let (meta, leaf) = column(Statistics {
+            min_value: Some(b"BUILDING".to_vec()),
+            max_value: Some(b"AUTOMOBILE".to_vec()),
+            null_count: Some(0),
+            distinct_count: None,
+        });
+        let s = chunk_stats(&meta, &leaf, 4);
+        assert_eq!(s.min, None, "an impossible minimum is not a minimum");
+        assert_eq!(s.max, None);
+        // The null count is independent and survives.
+        assert_eq!(s.null_count, Some(0));
+    }
+
+    #[test]
+    fn a_missing_null_count_stays_unknown() {
+        let (meta, leaf) = column(Statistics {
+            min_value: Some(b"a".to_vec()),
+            max_value: Some(b"z".to_vec()),
+            null_count: None,
+            distinct_count: None,
+        });
+        assert_eq!(chunk_stats(&meta, &leaf, 4).null_count, None);
+    }
+
+    #[test]
+    fn no_statistics_at_all_means_no_bounds_and_no_count() {
+        let (mut meta, leaf) = column(Statistics::default());
+        meta.statistics = None;
+        let s = chunk_stats(&meta, &leaf, 4);
+        assert_eq!((s.min, s.max, s.null_count), (None, None, None));
     }
 }

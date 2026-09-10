@@ -55,9 +55,10 @@ const MCV_COUNT: usize = 24;
 /// Cap on the distinct values tracked while looking for common ones. A column
 /// with more than this is not skewed in a way an MCV list can capture.
 /// Row groups decoded to build distribution statistics for a lazily loaded
-/// table. One 64K group is a large enough sample for a histogram that is itself
-/// built from 20K rows, and it keeps registration from reading the whole file.
-const SAMPLED_ROW_GROUPS: usize = 1;
+/// table. Four 64K groups is a large enough sample for a histogram that is
+/// itself built from 20K rows, and it keeps registration from reading the whole
+/// file: four groups of a 114-group Parquet file is 3% of it.
+const SAMPLED_ROW_GROUPS: usize = 4;
 
 const MCV_TRACKING_LIMIT: usize = 50_000;
 
@@ -124,6 +125,26 @@ pub struct TableStatistics {
     pub columns: Vec<ColumnStatistics>,
 }
 
+/// Up to `n` row groups, evenly spaced across the table.
+///
+/// Always includes the first and, where more than one is asked for, the last:
+/// the two ends are where a column ordered through the file has its extremes,
+/// and a histogram that has seen neither is a histogram of the middle.
+fn spread(groups: &[crate::storage::RowGroup], n: usize) -> Vec<&crate::storage::RowGroup> {
+    if groups.len() <= n || n == 0 {
+        return groups.iter().collect();
+    }
+    if n == 1 {
+        return groups[..1].iter().collect();
+    }
+    // `i * (len - 1) / (n - 1)` puts the first pick at 0 and the last at
+    // `len - 1`, with the rest spaced between. Integer arithmetic throughout,
+    // so no rounding decides whether the last group is included.
+    (0..n)
+        .map(|i| &groups[i * (groups.len() - 1) / (n - 1)])
+        .collect()
+}
+
 impl TableStatistics {
     /// One pass over the table. Called when a table enters the catalog, so
     /// every query planned afterwards has statistics to work with.
@@ -135,18 +156,24 @@ impl TableStatistics {
     /// values, and for a lazily loaded table that means decoding.
     ///
     /// So they are built from a *sample of row groups*: all of them when the
-    /// data is already in memory, and the first
-    /// [`SAMPLED_ROW_GROUPS`] when it is not. Reading a whole Parquet file at
+    /// data is already in memory, and [`SAMPLED_ROW_GROUPS`] of them, spread
+    /// evenly across the file, when it is not. Reading a whole Parquet file at
     /// registration to build a histogram would give back exactly the laziness
-    /// the format exists to provide, and a histogram over 64K rows is not
-    /// meaningfully worse than one over a million -- it was already built from
-    /// a 20K-row sample.
+    /// the format exists to provide, and a histogram over four 64K groups is
+    /// not meaningfully worse than one over a million rows -- it was already
+    /// built from a 20K-row sample.
+    ///
+    /// Spread, not the first few, because real files are written in order.
+    /// A month of taxi trips sampled from its opening row groups is a sample
+    /// of the first of the month: the histogram then knows nothing about a
+    /// column whose range drifts through the file, and predicts near zero for
+    /// values it never saw.
     pub fn analyze(table: &Table) -> TableStatistics {
         let row_count = table.num_rows();
         let width = table.schema.len();
 
         let sampled: Vec<&crate::storage::RowGroup> = if table.is_pending() {
-            table.row_groups.iter().take(SAMPLED_ROW_GROUPS).collect()
+            spread(&table.row_groups, SAMPLED_ROW_GROUPS)
         } else {
             table.row_groups.iter().collect()
         };
@@ -191,11 +218,14 @@ impl TableStatistics {
         }
 
         // Null counts are exact from the zone maps, over every row group --
-        // never only the sampled ones.
+        // never only the sampled ones. Where a group did not record one,
+        // counting it as zero understates the nulls: an estimate that is a
+        // little low is a cost-model matter, unlike pruning, which must never
+        // guess in the direction of skipping rows.
         let mut nulls = vec![0usize; width];
         for rg in &table.row_groups {
             for (c, s) in rg.stats.iter().enumerate().take(width) {
-                nulls[c] += s.null_count;
+                nulls[c] += s.null_count.unwrap_or(0);
             }
         }
 
@@ -396,7 +426,14 @@ fn estimate(
         LogicalPlan::Filter { predicate, input, .. } => {
             let input = estimate(input, catalog, out);
             let selectivity = selectivity(predicate, &input);
-            let rows = (input.rows * selectivity).max(0.0);
+            // Floored at one row, not zero. A histogram can drive the product
+            // arbitrarily close to nothing, but "no rows" is a claim of
+            // certainty that an estimate built from a sample has not earned --
+            // and every cost above divides by this, so a zero makes each plan
+            // through the filter look free and join ordering stops
+            // discriminating. Emptiness that really is provable is proved by
+            // the optimizer instead, which rewrites the query away entirely.
+            let rows = (input.rows * selectivity).clamp(1.0, input.rows.max(1.0));
             Estimate {
                 // A filter cannot increase the distinct count of a column, and
                 // cannot leave more distinct values than surviving rows. That is

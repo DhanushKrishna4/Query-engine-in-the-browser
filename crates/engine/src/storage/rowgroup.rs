@@ -41,11 +41,22 @@ const BLOOM_CARDINALITY_RATIO: f64 = 0.5;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ColumnStats {
-    /// Smallest non-NULL value; `None` if every value is NULL.
+    /// Smallest non-NULL value, or `None` when there is no bound to state.
+    ///
+    /// Two different situations produce `None`, and code that prunes on these
+    /// must not confuse them: a column where every value is NULL has no
+    /// bounds and matches no comparison, while a Parquet writer that omitted
+    /// statistics leaves bounds simply *unknown* and rules nothing out.
+    /// `null_count` against the group's row count is what tells them apart.
     pub min: Option<ScalarValue>,
-    /// Largest non-NULL value; `None` if every value is NULL.
+    /// Largest non-NULL value; see `min` for what `None` means.
     pub max: Option<ScalarValue>,
-    pub null_count: usize,
+    /// How many values are NULL, or `None` when the source did not say.
+    ///
+    /// Same trap as `min`: a Parquet footer may carry bounds and no null
+    /// count, or neither. Reading "not recorded" as zero turns `IS NULL` into
+    /// a predicate that prunes away the very rows it is looking for.
+    pub null_count: Option<usize>,
     /// Exact when the column has few distinct values, `None` when it has too
     /// many to track cheaply.
     pub distinct_count_estimate: Option<usize>,
@@ -57,7 +68,7 @@ impl ColumnStats {
         ColumnStats {
             min,
             max,
-            null_count: col.null_count(),
+            null_count: Some(col.null_count()),
             distinct_count_estimate: distinct_estimate(col),
         }
     }
