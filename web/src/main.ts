@@ -347,6 +347,50 @@ function columnViews(column: ColumnData): ColumnView {
 
 const decoder = new TextDecoder();
 const MS_PER_DAY = 86400000;
+const MICROS_PER_DAY = 86_400_000_000n;
+
+/**
+ * A Float64, rendered the way the engine renders it.
+ *
+ * `String(1)` is `"1"`, which makes a float column look like an integer one on
+ * a page whose whole job is showing you types -- and disagrees with the CLI,
+ * which prints `1.0` for the same value. Two halves of one project rendering
+ * the same bytes differently is the actual defect; this matches
+ * `ScalarValue`'s `Display`, including its cutoff, past which `{:.1}` would be
+ * meaningless anyway.
+ */
+function formatFloat(v: number): string {
+  return Number.isFinite(v) && Number.isInteger(v) && Math.abs(v) < 1e15
+    ? v.toFixed(1)
+    : String(v);
+}
+
+/**
+ * Microseconds since the epoch, rendered without losing any of them.
+ *
+ * This used to go through `new Date(micros / 1000)`, which is milliseconds --
+ * so `00:00:00.123456` displayed as `00:00:00.123` and the last three digits
+ * were gone. The comment above it claimed they were printed separately. They
+ * were not. A `Date` cannot hold them at all, so the whole-day part goes
+ * through one and the time-of-day is formatted from the remainder, which is
+ * what `types::format_timestamp` does on the Rust side.
+ */
+function formatTimestamp(micros: bigint): string {
+  // Floor division, so timestamps before 1970 land on the right day.
+  let days = micros / MICROS_PER_DAY;
+  let rest = micros % MICROS_PER_DAY;
+  if (rest < 0n) {
+    days -= 1n;
+    rest += MICROS_PER_DAY;
+  }
+  const date = new Date(Number(days) * MS_PER_DAY).toISOString().slice(0, 10);
+  const seconds = rest / 1_000_000n;
+  const fraction = rest % 1_000_000n;
+  const pad = (n: bigint) => String(n).padStart(2, "0");
+  const time = `${pad(seconds / 3600n)}:${pad((seconds / 60n) % 60n)}:${pad(seconds % 60n)}`;
+  // A trailing `.000000` on a whole second is noise, and the engine omits it.
+  return fraction === 0n ? `${date} ${time}` : `${date} ${time}.${String(fraction).padStart(6, "0")}`;
+}
 
 function cell(view: ColumnView, row: number): string | null {
   if (view.validity && (view.validity[row >> 3] & (1 << (row & 7))) === 0) return null;
@@ -354,8 +398,9 @@ function cell(view: ColumnView, row: number): string | null {
     case ColumnKind.Boolean:
       return String((view.values[row >> 3] & (1 << (row & 7))) !== 0);
     case ColumnKind.Int32:
-    case ColumnKind.Float64:
       return String(view.values[row]);
+    case ColumnKind.Float64:
+      return formatFloat(view.values[row]);
     case ColumnKind.Int64:
       // A BigInt64Array element, so `String` rather than a template literal --
       // the latter is the same thing but reads as if it might be a number.
@@ -363,9 +408,7 @@ function cell(view: ColumnView, row: number): string | null {
     case ColumnKind.Date32:
       return new Date(view.values[row] * MS_PER_DAY).toISOString().slice(0, 10);
     case ColumnKind.Timestamp:
-      // Microseconds since the epoch. Milliseconds is all a JS Date holds, so
-      // the sub-millisecond part is printed separately rather than dropped.
-      return new Date(Number(view.values[row] / 1000n)).toISOString().replace("T", " ").replace("Z", "");
+      return formatTimestamp(view.values[row]);
     case ColumnKind.Utf8:
       return view.offsets
         ? decoder.decode(view.values.subarray(view.offsets[row], view.offsets[row + 1]))
