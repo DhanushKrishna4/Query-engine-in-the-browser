@@ -20,4 +20,13 @@ proptest = "1"
 # Parser snapshot tests. The pretty-printed AST is reviewed once and frozen,
 # and `cargo insta` shows a diff rather than a wall of expected-vs-actual.
 insta = "1"
+# Microbenchmarks. `qe --bench` compares two whole-engine *configurations* and
+# reports a ratio, which is the comparison this project is about; criterion
+# measures one thing carefully, with confidence intervals and a warning when a
+# result moves. They answer different questions, so both are here.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "kernels"
+harness = false
 

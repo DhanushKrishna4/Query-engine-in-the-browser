@@ -2162,11 +2162,6 @@ group and got compacted every time. That alone cost 2x.
 - **Decimal arithmetic degrades to Float64.** Decimals compare and cast exactly
   (rescaling through `i128`), but mixed-type arithmetic goes through `f64`
   rather than faking exact fixed-point results.
-- **No `criterion`.** Benchmarks go through `qe --bench`, which times a query
-  set under two *configurations* and reports the ratio -- vectorized against
-  scalar, hash join against merge, pruning against none. That comparison is the
-  point here, and criterion measures one implementation carefully rather than
-  two against each other. It is on the allowed list and stays unused.
 - **No result hashing in the sqllogictest harness.** The
   `N values hashing to <md5>` form exists to keep corpus files small; supporting
   it means an MD5 dependency or hand-rolling MD5, neither of which pays yet.
@@ -2324,6 +2319,33 @@ other implementation to compare it against, and that needs a Sort operator.
 Results must also not depend on execution parameters, so the suite runs a query
 across batch sizes of 1, 7, 64, 2048 and 100,000 and across compaction
 thresholds and demands identical output.
+
+### Two benchmark harnesses, because there are two questions
+
+`qe --bench` asks how the whole engine compares against *itself* configured
+differently -- vectorized against scalar, hash join against merge, pruning
+against none -- and reports a ratio. That comparison is most of what this
+project is about, and a ratio is the right shape for it.
+
+`cargo bench -p engine` asks how fast one thing is, with a confidence interval
+and a warning when it moves. That is what the pieces underneath want, because
+no SQL query isolates any of them:
+
+```text
+csv/read_csv 100k rows, 6 columns   68.7 ms
+btree/insert 100k keys              17.3 ms
+btree/probe/1k point lookups        93.8 µs
+btree/probe/range of ~1k keys        9.7 µs
+encoding/encode 100k int32         786.3 µs
+encoding/decode 100k int32          67.3 µs
+encoding/can_match, absent value      1.7 ns
+bloom/probe/1k probes, all absent   64.8 µs
+```
+
+That last line but one is the retreat from step 18 quantified: proving a row
+group empty from a dictionary's own summary costs a nanosecond and a half,
+which is why *that* half of encoded predicate evaluation was kept when the
+other half was measured 3x slower and dropped.
 
 ### Random tables, not just random queries
 
