@@ -1133,6 +1133,31 @@ Parquet file stays compressed on disk and is still decoded lazily by the engine.
 A browser that refuses the cache (a private window, site data blocked) gets the
 engine anyway: `openDb` resolves to `null` and the fetch simply happens again.
 
+### SIMD128, verified
+
+`.cargo/config.toml` passes `+simd128` so that LLVM can vectorize the kernels
+in `expr/vector.rs`, which are written as branch-free loops over contiguous
+slices for exactly that reason. Whether it *did* is a different question, and
+for a long time this file said so and left it there.
+
+Disassembling the release module answers it: **12,252 v128 instructions**, and
+the two functions holding the most of them are the ones the flag was for.
+
+```text
+  683  engine::expr::vector::compare_operands
+  681  engine::expr::vector::compare_scalar
+  317  engine::expr::vector::compile
+  132  engine::expr::vector::eval_node
+```
+
+Inside `compare_operands`: `v128.load`, `i32x4.add`, `i64x2.extract_lane`,
+`v128.and`/`v128.or` folding lane results into a bitmap, `i8x16.shuffle`
+packing them. Four lanes at a time, which is what the flag buys.
+
+`wasm-opt` runs at `-O3`, as the spec asks. It is *not* the smaller choice --
+`-O3` optimizes for speed and costs about 3 KiB against the default `-O` -- and
+a megabyte of parser, optimizer and operators downloaded once is worth 3 KiB.
+
 ### Verified in a real browser
 
 Twelve tests cover the boundary's conversions natively under `cargo test` --
@@ -1158,9 +1183,6 @@ the character before it.
 - **It runs on the main thread**, so a long query freezes the tab. A worker is
   the fix, and the clock already reaches `performance` through the global rather
   than through `window` so that it will work there.
-- **SIMD128 is enabled but unverified.** `.cargo/config.toml` passes
-  `+simd128`; whether v128 instructions are actually emitted needs
-  `wasm-objdump`, which is not installed here. Treat it as unmeasured.
 - **The pipeline shows batches, not their contents.** Watching a selection
   vector narrow batch by batch would need per-batch events rather than
   per-operator totals, which is a change to the `Operator` trait rather than to
