@@ -115,7 +115,7 @@ fn join_strings(text: &str) -> String {
     while let Some(s) = first_string(rest) {
         let at = rest.find('"').unwrap();
         let after = rest[at + 1..]
-            .find(|c| c == '"')
+            .find('"')
             .map(|i| at + 1 + i + 1)
             .unwrap_or(rest.len());
         out.push_str(&s);
