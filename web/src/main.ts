@@ -110,8 +110,8 @@ const COLLECTIONS: Collection[] = [
           "JOIN orders o ON c.c_custkey = o.o_custkey\n" +
           "JOIN lineitem l ON l.l_orderkey = o.o_orderkey\n" +
           "WHERE c.c_mktsegment = 'BUILDING'\n" +
-          "  AND o.o_orderdate < CAST('1995-03-15' AS DATE)\n" +
-          "  AND l.l_shipdate > CAST('1995-03-15' AS DATE)\n" +
+          "  AND o.o_orderdate < DATE '1995-03-15'\n" +
+          "  AND l.l_shipdate > DATE '1995-03-15'\n" +
           "GROUP BY l.l_orderkey, o.o_orderdate, o.o_shippriority\n" +
           "ORDER BY revenue DESC, o.o_orderdate\n" +
           "LIMIT 10",
@@ -123,8 +123,8 @@ const COLLECTIONS: Collection[] = [
         sql:
           "SELECT SUM(l_extendedprice * l_discount) AS revenue\n" +
           "FROM lineitem\n" +
-          "WHERE l_shipdate >= CAST('1994-01-01' AS DATE)\n" +
-          "  AND l_shipdate < CAST('1995-01-01' AS DATE)\n" +
+          "WHERE l_shipdate >= DATE '1994-01-01'\n" +
+          "  AND l_shipdate < DATE '1995-01-01'\n" +
           "  AND l_discount BETWEEN 0.05 AND 0.07\n" +
           "  AND l_quantity < 24",
         watch:
@@ -135,8 +135,8 @@ const COLLECTIONS: Collection[] = [
         sql:
           "SELECT o.o_orderpriority, COUNT(*) AS order_count\n" +
           "FROM orders o\n" +
-          "WHERE o.o_orderdate >= CAST('1993-07-01' AS DATE)\n" +
-          "  AND o.o_orderdate < CAST('1993-10-01' AS DATE)\n" +
+          "WHERE o.o_orderdate >= DATE '1993-07-01'\n" +
+          "  AND o.o_orderdate < DATE '1993-10-01'\n" +
           "  AND EXISTS (\n" +
           "    SELECT 1 FROM lineitem l\n" +
           "    WHERE l.l_orderkey = o.o_orderkey AND l.l_commitdate < l.l_receiptdate\n" +
