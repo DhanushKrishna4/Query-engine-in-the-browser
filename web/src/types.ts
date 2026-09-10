@@ -29,9 +29,15 @@ export interface StatsInfo {
   row_groups_scanned: number;
   row_groups_pruned: number;
   row_groups_bloom_pruned: number;
+  /** Scans only: the table read, and what became of each of its row groups. */
+  scanned_table: string | null;
+  row_group_verdicts: GroupVerdict[];
   compactions: number;
   children: StatsInfo[];
 }
+
+/** What a scan did with one row group, in the order they appear in the file. */
+export type GroupVerdict = "untouched" | "scanned" | "zone map" | "bloom" | "encoding";
 
 export interface OutcomeMeta {
   columns: FieldInfo[];

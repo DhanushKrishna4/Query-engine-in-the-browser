@@ -52,6 +52,36 @@ use crate::parser::ast::BinaryOperator;
 use crate::plan::{BoundExpr, BoundExprKind, JoinType, LogicalPlan, RelId};
 use crate::storage::{Batch, Column, Schema, Selection, Table, DEFAULT_BATCH_SIZE};
 
+/// What a scan did with one row group.
+///
+/// `Untouched` is not the same as `Pruned`: a `LIMIT` can satisfy itself and
+/// stop, leaving groups nobody ever ruled out. Colouring those as pruned would
+/// credit the zone maps with work they did not do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GroupVerdict {
+    #[default]
+    Untouched,
+    Scanned,
+    /// The zone map's bounds could not hold a matching row.
+    ZoneMap,
+    /// The bloom filter said the value is not present.
+    Bloom,
+    /// An encoded column answered the predicate outright.
+    Encoding,
+}
+
+impl GroupVerdict {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GroupVerdict::Untouched => "untouched",
+            GroupVerdict::Scanned => "scanned",
+            GroupVerdict::ZoneMap => "zone map",
+            GroupVerdict::Bloom => "bloom",
+            GroupVerdict::Encoding => "encoding",
+        }
+    }
+}
+
 /// Per-operator counters. This is the struct the UI's EXECUTION tab renders,
 /// and later the place estimated-vs-actual cardinality lives.
 #[derive(Debug, Clone, Default)]
@@ -85,6 +115,15 @@ pub struct OperatorStats {
     /// Of the pruned groups, how many an encoded column ruled out exactly --
     /// a zone map narrows to a range, an encoding answers the predicate.
     pub row_groups_encoding_pruned: u64,
+    /// What happened to each row group, in file order.
+    ///
+    /// The counters above say how many; this says *which*, so the storage
+    /// inspector can colour the groups it draws instead of stating a ratio.
+    /// Seeing that a predicate skipped groups 0-12 and 40-113 but not the ones
+    /// in between is the thing that makes a zone map concrete.
+    pub row_group_verdicts: Vec<GroupVerdict>,
+    /// The table this scan read, so a verdict can be attributed to one.
+    pub scanned_table: Option<String>,
     /// Filter-only: how many times a selection got sparse enough to be worth
     /// materializing.
     pub compactions: u64,
@@ -574,6 +613,8 @@ impl ScanExec {
     pub fn new(table: Arc<Table>) -> ScanExec {
         let mut stats = OperatorStats::new("Scan", format!("table={}", table.name));
         stats.row_groups_total = table.num_row_groups() as u64;
+        stats.row_group_verdicts = vec![GroupVerdict::Untouched; table.num_row_groups()];
+        stats.scanned_table = Some(table.name.clone());
         let schema = Arc::clone(&table.schema);
         ScanExec {
             table,
@@ -692,13 +733,21 @@ impl ScanExec {
         };
         let rg = &self.table.row_groups[index];
         if self.zone_maps && !prune::row_group_can_match(predicate, *rel, &rg.stats, rg.num_rows) {
+            self.record(index, GroupVerdict::ZoneMap);
             return true;
         }
         if self.blooms && prune::bloom_rejects(predicate, *rel, &rg.blooms, &self.table.schema) {
             self.stats.row_groups_bloom_pruned += 1;
+            self.record(index, GroupVerdict::Bloom);
             return true;
         }
         false
+    }
+
+    fn record(&mut self, index: usize, verdict: GroupVerdict) {
+        if let Some(slot) = self.stats.row_group_verdicts.get_mut(index) {
+            *slot = verdict;
+        }
     }
 }
 
@@ -750,10 +799,12 @@ impl Operator for ScanExec {
                 if self.encodings && self.encoding_rules_out(rg) {
                     self.stats.row_groups_encoding_pruned += 1;
                     self.stats.row_groups_pruned += 1;
+                    self.record(self.row_group, GroupVerdict::Encoding);
                     self.row_group += 1;
                     continue;
                 }
                 self.stats.row_groups_scanned += 1;
+                self.record(self.row_group, GroupVerdict::Scanned);
                 // Only now, past the zone maps and the bloom filters, is any
                 // data actually read. For a Parquet table a pruned group costs
                 // nothing but the two comparisons that ruled it out.

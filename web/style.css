@@ -151,6 +151,12 @@ footer { max-width: 1200px; margin: 2rem auto 0; padding: 0 1.5rem; color: var(-
 .rg-head { display: flex; justify-content: space-between; gap: 1rem; padding: .45rem .8rem; background: #12151c; border-bottom: 1px solid var(--line); font-size: .78rem; }
 .rg-head b { color: var(--accent); font-weight: 600; }
 .rg.pruned { opacity: .45; }
+/* What the last query's scan did with each group. A pruned group is dimmed
+   and outlined, so the pattern of skips is visible before any label is read. */
+.rg-scanned { border-color: var(--accent-dim); }
+.rg-pruned { opacity: .5; border-style: dashed; }
+.chip.pruned { border-color: var(--warn); color: var(--warn); }
+.rg-head .dim { color: var(--dim); }
 .zone { font-size: .76rem; }
 .zone td, .zone th { padding: .22rem .8rem .22rem 0; }
 .chip { border: 1px solid var(--accent-dim); color: var(--accent); border-radius: 3px; padding: 0 .3rem; font-size: .68rem; }

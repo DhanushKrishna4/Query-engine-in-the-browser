@@ -14,6 +14,7 @@ import type {
   PlanNode,
   StatsInfo,
   StorageInfo,
+  GroupVerdict,
   TableInfo,
   TokenInfo,
   TreeNodeInfo,
@@ -463,7 +464,25 @@ function renderResults(outcome: Outcome, meta: OutcomeMeta) {
 }
 
 /** The operator tree, with each node's exclusive share of the time. */
+/**
+ * What the last query's scans did to each table's row groups.
+ *
+ * Recorded here rather than passed down because the storage inspector is drawn
+ * when its tab is opened, which is usually several queries later, and the
+ * point of the panel is to show what the query you just ran actually skipped.
+ */
+const lastScans = new Map<string, GroupVerdict[]>();
+
+function collectScans(node: StatsInfo) {
+  if (node.scanned_table && node.row_group_verdicts.length > 0) {
+    lastScans.set(node.scanned_table, node.row_group_verdicts);
+  }
+  node.children.forEach(collectScans);
+}
+
 function renderPipeline(stats: StatsInfo) {
+  lastScans.clear();
+  collectScans(stats);
   const body = $("tab-pipeline");
   body.textContent = "";
   let total = 0;
@@ -737,6 +756,28 @@ function renderTrace(explain: ExplainInfo) {
 // Storage inspector
 // ---------------------------------------------------------------------------
 
+/** The border colour for a row group, by what happened to it. */
+function verdictClass(verdict: GroupVerdict | undefined): string {
+  switch (verdict) {
+    case "scanned":
+      return " rg-scanned";
+    case undefined:
+    case "untouched":
+      return "";
+    default:
+      return " rg-pruned";
+  }
+}
+
+/** A chip naming what skipped a row group, or that it was read. */
+function verdictChip(verdict: GroupVerdict | undefined): string {
+  if (verdict === undefined || verdict === "untouched") return "";
+  if (verdict === "scanned") return ` <span class="chip">scanned</span>`;
+  // Which structure ruled it out, because they rule out different shapes of
+  // predicate and knowing which one fired is the point of showing this at all.
+  return ` <span class="chip pruned">pruned · ${escapeHtml(verdict)}</span>`;
+}
+
 /** Bytes at a scale a reader can hold in their head. */
 function humanBytes(n: number): string {
   const units = ["B", "KiB", "MiB", "GiB"];
@@ -780,6 +821,9 @@ function renderStorage(table: string) {
     tableSwitcher(table, renderStorage) +
     `</div>`;
 
+  const verdicts = lastScans.get(table) ?? [];
+  const skipped = verdicts.filter((v) => v !== "scanned" && v !== "untouched").length;
+
   const groups = info.row_groups
     .slice(0, ROW_GROUPS_SHOWN)
     .map((rg, i) => {
@@ -790,13 +834,22 @@ function renderStorage(table: string) {
             `<td>${c.min === null ? "—" : escapeHtml(c.min)}</td><td>${c.max === null ? "—" : escapeHtml(c.max)}</td>` +
             `<td class="num">${c.nulls === null ? "?" : c.nulls}</td>` +
             `<td class="num">${c.distinct === null ? "&gt;8192" : c.distinct}</td>` +
+            `<td>${
+              c.encoding === null
+                ? '<span class="chip off">plain</span>'
+                : `<span class="chip">${escapeHtml(c.encoding)}</span>` +
+                  (c.ratio === null ? "" : ` <span class="dim">${c.ratio.toFixed(1)}x</span>`)
+            }</td>` +
             `<td><span class="chip ${c.bloom ? "" : "off"}">${c.bloom ? "bloom" : "—"}</span></td></tr>`
         )
         .join("");
       return (
-        `<div class="rg"><div class="rg-head"><span><b>row group ${i}</b> · ${rg.rows.toLocaleString()} rows · ${humanBytes(rg.bytes)}</span>` +
+        `<div class="rg${verdictClass(verdicts[i])}"><div class="rg-head">` +
+        `<span><b>row group ${i}</b> · ${rg.rows.toLocaleString()} rows · ${humanBytes(rg.bytes)}` +
+        verdictChip(verdicts[i]) +
+        `</span>` +
         `<span style="color:var(--dim)">${rg.resident === null ? "resident" : `${rg.resident}/${rg.columns.length} columns decoded`}</span></div>` +
-        `<table class="zone"><thead><tr><th>column</th><th>type</th><th>min</th><th>max</th><th>nulls</th><th>distinct</th><th></th></tr></thead>` +
+        `<table class="zone"><thead><tr><th>column</th><th>type</th><th>min</th><th>max</th><th>nulls</th><th>distinct</th><th>encoding</th><th></th></tr></thead>` +
         `<tbody>${rows}</tbody></table></div>`
       );
     })
@@ -805,7 +858,12 @@ function renderStorage(table: string) {
   body.innerHTML =
     head +
     `<p class="tree-legend">min and max are the zone map: a predicate outside a group's range skips it without reading a byte. ` +
-    `For a Parquet table both come from the file's footer, and the decoded count is what the queries you have run actually needed.</p>` +
+    `For a Parquet table both come from the file's footer, and the decoded count is what the queries you have run actually needed.` +
+    (verdicts.length > 0
+      ? ` The last query's scan of this table skipped <b>${skipped}</b> of ${verdicts.length} ` +
+        `row group${verdicts.length === 1 ? "" : "s"}, and each one below says what skipped it.`
+      : ` Run a query against this table and the groups below will say which were read and which were skipped.`) +
+    `</p>` +
     groups +
     (info.row_groups.length > ROW_GROUPS_SHOWN
       ? `<p class="empty">showing ${ROW_GROUPS_SHOWN} of ${info.row_groups.length} row groups. ` +

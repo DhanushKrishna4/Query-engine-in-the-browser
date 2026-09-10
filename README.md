@@ -1039,7 +1039,7 @@ engine has carried since step 8 rather than added for a UI:
 | **optimizer trace** | a slider over the rewrites, one at a time, with the subtree the rule fired at highlighted in both plans |
 | **physical plan** | which operator was chosen at each node, and *why* that one |
 | **execution** | the operator tree with rows in and out, each node's *exclusive* share of the time as a bar, the batches it handed upward, row groups read versus pruned, and the estimate beside reality with its q-error |
-| **storage** | every row group's zone map, bloom filters, and -- for a Parquet table -- how many of its columns have actually been decoded |
+| **storage** | every row group's zone map, its encoding and compression ratio, its bloom filters, and -- for a Parquet table -- how many of its columns have actually been decoded. After a query, each group says whether it was read or skipped, and by which structure |
 | **index** | a B+ tree drawn level by level, and the path a probe takes down it |
 
 The AST panel is drawn from `ast::pretty`, the same indented text the parser's
@@ -1081,21 +1081,33 @@ running
 
 ```text
 metrics · 1,000 rows · 8 row groups · 59.0 KiB · lazily decoded from Parquet
+the last query's scan of this table skipped 7 of 8 row groups
 
-row group 0   128 rows    10/10 columns decoded     id  int32  min 0    max 127
-row group 1   128 rows     0/10 columns decoded     id  int32  min 128  max 255
-row group 2   128 rows     2/10 columns decoded     id  int32  min 256  max 383
-row group 3   128 rows     0/10 columns decoded     id  int32  min 384  max 511
+row group 0  128 rows  pruned · zone map   10/10 decoded   id  min 0    max 127
+row group 1  128 rows  pruned · zone map    0/10 decoded   id  min 128  max 255
+row group 2  128 rows  scanned             10/10 decoded   id  min 256  max 383
+row group 3  128 rows  pruned · zone map    0/10 decoded   id  min 384  max 511
 ...
 ```
 
-One row group read out of eight, and in it two columns of ten. The bounds came
-from the file's footer, so the seven skipped groups were never touched. Group 0
-is fully decoded because registration sampled it to build the cost model's
-histograms -- the tradeoff from step 16, visible rather than described. Four
-groups are sampled now, spread across the file rather than taken from the
-front, because real files are written in order and a sample of the first groups
-of a month of taxi trips is a sample of the first of the month.
+One row group read out of eight, and the seven that were not say *what* skipped
+them -- the zone map, a bloom filter, or an encoded column that answered the
+predicate outright. They rule out different shapes of predicate, and which one
+fired is the point of showing this rather than a ratio. A group nobody ruled
+out because a `LIMIT` was already satisfied is left unmarked, which is not the
+same thing and must not be coloured as if it were.
+
+The bounds came from the file's footer, so a skipped group was never touched.
+Groups 0, 2, 4 and 7 are fully decoded whatever the query, because registration
+sampled them to build the cost model's histograms -- the tradeoff from step 16,
+visible rather than described. Four groups, spread across the file rather than
+taken from the front, because real files are written in order and a sample of
+the opening groups of a month of taxi trips is a sample of the first of the
+month.
+
+Each column also names the encoding it is held in and what that bought:
+`bit-packed 1.7x` on the integer keys, `dictionary 1.7x` on a column with three
+distinct values, `plain` where neither paid for itself.
 
 **The index visualizer** draws the tree and the descent. A level wider than the
 cap is sampled evenly across its key range -- an index over a million rows has

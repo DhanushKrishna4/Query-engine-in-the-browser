@@ -172,6 +172,11 @@ struct StatsInfo {
     row_groups_scanned: u64,
     row_groups_pruned: u64,
     row_groups_bloom_pruned: u64,
+    /// Scans only: the table read, and what happened to each of its row groups
+    /// in file order. The storage inspector colours its groups from this, which
+    /// is what turns "87 of 114 read" into a picture.
+    scanned_table: Option<String>,
+    row_group_verdicts: Vec<&'static str>,
     compactions: u64,
     children: Vec<StatsInfo>,
 }
@@ -222,6 +227,8 @@ fn stats_info(node: &StatsNode) -> StatsInfo {
         row_groups_scanned: s.row_groups_scanned,
         row_groups_pruned: s.row_groups_pruned,
         row_groups_bloom_pruned: s.row_groups_bloom_pruned,
+        scanned_table: s.scanned_table.clone(),
+        row_group_verdicts: s.row_group_verdicts.iter().map(|v| v.as_str()).collect(),
         compactions: s.compactions,
         children: node.children.iter().map(stats_info).collect(),
     }
