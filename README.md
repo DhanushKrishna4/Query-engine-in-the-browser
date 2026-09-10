@@ -1038,7 +1038,7 @@ engine has carried since step 8 rather than added for a UI:
 | **bound plan** | the optimized plan, the same plan with every leaf's resolved type, and the plan as the binder produced it |
 | **optimizer trace** | a slider over the rewrites, one at a time, with the subtree the rule fired at highlighted in both plans |
 | **physical plan** | which operator was chosen at each node, and *why* that one |
-| **execution** | the operator tree with rows in and out, each node's *exclusive* share of the time as a bar, the batches it handed upward, row groups read versus pruned, and the estimate beside reality with its q-error |
+| **execution** | the operator tree with rows in and out, each node's *exclusive* share of the time as a bar, the batches it handed upward, row groups read versus pruned, and the estimate beside reality with its q-error. On a streamed query it updates while the query runs, so the counts climb |
 | **storage** | every row group's zone map, its encoding and compression ratio, its bloom filters, and -- for a Parquet table -- how many of its columns have actually been decoded. After a query, each group says whether it was read or skipped, and by which structure |
 | **index** | a B+ tree drawn level by level, and the path a probe takes down it |
 
@@ -1230,6 +1230,13 @@ operator-statistics tree, serialized afresh on every read -- including, now, a
 verdict per row group. Reading it per batch costs more than the batch did. The
 schema comes from the first chunk, the row count from the chunk itself, and the
 statistics from a getter on the stream, once, at the end.
+
+Once per *frame*, though, is affordable, and that is what makes the execution
+panel live: while a streamed query runs, the scan's row count climbs through
+`18,432 · 1,181,696 · 3,606,528 · 5,965,824 · 7,433,139` and the time bars
+redistribute under it. Only when that panel is on screen -- redrawing a hidden
+one sixty times a second is the kind of cost that makes streaming slower than
+not streaming.
 
 ## The physical plan, and why
 

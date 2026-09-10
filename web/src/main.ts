@@ -1601,6 +1601,15 @@ async function runStreaming(sql: string): Promise<OutcomeMeta | null> {
 
     if (performance.now() - frameStart >= FRAME_MS) {
       timing.textContent = `${total.toLocaleString()} rows…`;
+      // The execution panel, while the query is still running: rows climbing
+      // through each operator, the time bars redistributing, the estimate
+      // sitting still beside a number that is not. Only when it is on screen
+      // -- the statistics tree is not free to read, and redrawing a hidden
+      // panel sixty times a second is the kind of cost that makes streaming
+      // slower than not streaming.
+      if (!$("tab-pipeline").hidden) {
+        renderPipeline(JSON.parse(progress.stats) as StatsInfo);
+      }
       await yieldToBrowser();
       frameStart = performance.now();
     }
