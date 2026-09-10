@@ -1193,7 +1193,16 @@ const EXAMPLES: Example[] = [
     label: "a filter and a sort",
     sql: "SELECT name, city, salary\nFROM people\nWHERE salary > 170000\nORDER BY salary DESC",
     watch:
-      "optimizer trace → predicate_pushdown moves the filter under the sort, so the sort orders the rows that survive rather than all of them.",
+      "optimizer trace → projection_pushdown rewrites the scan to read three of the nine columns. A columnar engine should never touch a column the query does not name, and the highlighted line is where that gets decided.",
+  },
+  {
+    label: "a predicate sliding into a join",
+    sql:
+      "SELECT p.name, o.product\n" +
+      "FROM people p JOIN purchases o ON p.id = o.person_id\n" +
+      "WHERE p.salary > 170000",
+    watch:
+      "optimizer trace → step 1, predicate_pushdown. The filter starts above the join and ends up inside its left side, so the join builds from the rows that survive instead of filtering afterwards. This is the rewrite worth watching.",
   },
   {
     label: "a join",
