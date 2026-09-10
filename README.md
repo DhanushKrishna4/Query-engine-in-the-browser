@@ -1063,6 +1063,104 @@ order on both sides.
   is a different piece of software; this draws a faithful sample with the path
   intact and says how many nodes it stood in for.
 
+## Column encodings
+
+Four, chosen per column from the data's own shape rather than from a
+declaration:
+
+| | for | |
+| --- | --- | --- |
+| dictionary | low-cardinality text | codes into a *sorted* dictionary |
+| run-length | sorted or low-entropy columns | one entry per run |
+| bit-packed | small integer ranges | `value - min` in as few bits as fit |
+| frame-of-reference | clustered numerics that drift | a minimum and a width per 1024-value block |
+
+Each candidate is measured and the smallest that beats 1.2x wins; a column
+where none of them pays stays plain. On the million-row taxi fixture:
+
+```text
+trip_id         INT32     distinct~>8192   frame-of-reference 3.1x
+vendor          UTF8      distinct~3       dictionary 2.2x
+pickup_borough  UTF8      distinct~5       dictionary 3.0x
+passengers      INT32     distinct~6       bit-packed 10.7x
+distance_mi     FLOAT64   distinct~1588
+fare            FLOAT64   distinct~1588
+pickup_date     DATE32    distinct~336     bit-packed 3.6x
+medallion       UTF8      distinct~>8192
+```
+
+**65.8 MiB to 44.7 MiB**, a third of the table gone. The floats and the
+high-cardinality strings are left alone, which is the right answer for them.
+
+An encoded column is decoded on demand through the same lazy machinery Parquet
+uses, and deliberately *not* cached afterwards -- caching would leave the column
+costing its encoded size plus its decoded size, which is worse than never
+encoding it. Unpacking bits per query is cheap; storing both forms is not.
+
+### Predicates on the encoded form, and where that stopped being worth it
+
+The spec asks for predicate evaluation without full decompression, and the
+first implementation did exactly that: translate the predicate into the
+encoding's domain, evaluate it there, hand the filter a narrowed selection. It
+agreed with the decoded path on all 1,010 corpus queries and it was **three
+times slower**.
+
+Two reasons, and both are structural rather than fixable by tuning. The filter
+above re-evaluates the predicate regardless -- that is what makes pruning a
+hint rather than a decision -- so the encoded pass is redundant work. And a
+scalar loop setting one bit at a time is no match for a vectorized comparison
+over a dense array, which is what the decoded path already had.
+
+What survives is the cheap half of the question. Instead of *which rows match*,
+ask *could any row match*, which costs a pass over the encoding's metadata
+rather than its rows:
+
+* a dictionary has a handful of distinct values, so this is O(distinct) however
+  many rows there are -- and it is **exact**, where a bloom filter is
+  probabilistic and a zone map is only a range;
+* a run-length column has one entry per run;
+* frame-of-reference blocks each carry their own range, finer than the row
+  group's single min/max.
+
+Bit-packing is deliberately excluded: its range is the column's min and max,
+which is precisely what the zone map already checked.
+
+| query | encoded | plain | |
+| --- | ---: | ---: | ---: |
+| `pickup_borough = 'Chicago'` (absent) | 0.03 ms | 23.8 ms | **865x** |
+| `vendor = 'purple'` (absent) | 0.02 ms | 20.9 ms | **1039x** |
+| the same with a second predicate | 0.03 ms | 22.4 ms | **641x** |
+| `pickup_borough = 'Bronx'` (present) | 23.8 ms | 24.0 ms | 1.0x |
+| `passengers > 4` | 2.72 ms | 2.71 ms | 1.0x |
+| `trip_id < 50000` | 0.38 ms | 0.38 ms | 1.0x |
+| `fare > 45` (float, not encoded) | 0.61 ms | 0.61 ms | 1.0x |
+
+`'Chicago'` sorts between `'Bronx'` and `'Staten Island'`, so the zone map
+cannot rule it out and every row group survives to be scanned. Five string
+comparisons per group settle it exactly.
+
+That is the bloom filters' job on a high-cardinality column -- and the two turn
+out to be **exactly complementary**: a filter is built when distinct values
+exceed half the rows, a dictionary when they do not. Every column gets one or
+the other, and neither was designed with the other in mind.
+
+The 1.0x rows matter as much: the check costs nothing measurable when it cannot
+prune.
+
+### Two bugs the tests caught
+
+**A NULL's dictionary code collided with a real value.** NULLs are not encoded
+-- they live in the validity bitmap -- so a NULL row's code is a placeholder
+zero, which is `'Austin'`'s code. `evaluate` now takes the validity bitmap and
+masks with it, which is what makes "a comparison against NULL is UNKNOWN, never
+TRUE" true of the fast path as well as the slow one. The same placeholder
+problem exists for the packed encodings, where a NULL decodes to the block
+minimum.
+
+**Run-length encoding dropped the validity of its runs.** A run of NULLs is a
+run like any other, and storing only the values decoded it as a run of
+placeholder zeros. It stores a whole `Column` now.
+
 ## Against sql.js
 
 **[Run it yourself](https://dhanushkrishna4.github.io/Query-engine-in-the-browser/bench.html)**
@@ -1746,6 +1844,14 @@ group and got compacted every time. That alone cost 2x.
   changes.
 - **No multi-column statistics.** Correlated predicates are the largest source
   of estimation error and nothing here addresses them.
+- **Encoded predicates prove emptiness, not membership.** An encoding can say
+  no row in a group matches; it cannot hand back which rows do, because the
+  narrowing version measured 3x slower than decoding. Making it pay would mean
+  the scan stripping handled conjuncts from the filter above, which is the
+  property that currently makes pruning safe.
+- **Encodings are chosen at ingest and never revisited.** A column that would
+  compress well after a later load is not re-examined, and there is no
+  equivalent of `ANALYZE` to ask for it.
 - **The rule set is now the spec's, but it is not exhaustive.** Aggregate
   pushdown handles the decomposable aggregates and refuses `AVG`; splitting
   `AVG` into `SUM/COUNT` so it can be pushed too is a further rewrite.
@@ -1812,7 +1918,7 @@ group and got compacted every time. That alone cost 2x.
 
 ## Testing
 
-`cargo test` -- 324 tests plus a 1,050-record sqllogictest corpus, every query of
+`cargo test` -- 343 tests plus a 1,066-record sqllogictest corpus, every query of
 which is additionally run seven ways and compared, run a second time against
 Parquet-backed tables, and scored for estimation accuracy.
 

@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::error::Result;
 
+use crate::storage::bitmap::Bitmap;
 use crate::storage::bloom::BloomFilter;
 use crate::storage::column::Column;
 use crate::types::ScalarValue;
@@ -85,6 +86,106 @@ pub trait ChunkSource: std::fmt::Debug + Send + Sync {
     fn decode(&self, column: usize) -> Result<Column>;
     /// Compressed bytes this row group occupies in the file.
     fn byte_size(&self) -> usize;
+
+    /// Whether a decoded column should be kept in memory afterwards.
+    ///
+    /// True for Parquet, where reproducing it means decompressing a page
+    /// again. False for an in-memory encoding, where caching would defeat the
+    /// point: the column would then cost its encoded *and* its decoded size,
+    /// which is more than never encoding it at all. Unpacking bits per query
+    /// is cheap; storing both forms is not.
+    fn cache_decoded(&self) -> bool {
+        true
+    }
+
+    /// Whether decoding is expensive enough to be worth avoiding.
+    ///
+    /// A Parquet chunk is: it means decompressing a page. An in-memory encoding
+    /// is not -- unpacking bits is cheap, and treating it as deferred would
+    /// make the statistics pass sample one row group instead of reading the
+    /// table it already has.
+    fn is_deferred(&self) -> bool {
+        true
+    }
+
+    /// The encoding's name and its compression ratio, for the inspector.
+    fn describe(&self, _column: usize) -> Option<(&'static str, f64)> {
+        None
+    }
+
+    /// The encoded form of a column, for a predicate that can be answered
+    /// without decoding it.
+    ///
+    /// On the trait rather than reached by downcasting: `dyn ChunkSource` would
+    /// have to require `Any` for that, and a source that has no encoded form to
+    /// offer can simply say so.
+    fn encoded(
+        &self,
+        _column: usize,
+    ) -> Option<(&crate::storage::encoding::Encoded, Option<&Bitmap>)> {
+        None
+    }
+}
+
+/// Columns held in one of the `storage::encoding` forms.
+///
+/// The encoded bytes stay resident and the decoded column is cached beside
+/// them on first use, so a column a query reads costs both. That is the right
+/// trade only because projection pushdown means a query reads the columns it
+/// named and no others -- and because a predicate on an encoded column is
+/// answered without decoding at all.
+#[derive(Debug)]
+pub struct EncodedChunks {
+    columns: Vec<Option<EncodedColumn>>,
+}
+
+#[derive(Debug)]
+struct EncodedColumn {
+    encoded: crate::storage::encoding::Encoded,
+    validity: Option<Bitmap>,
+    /// What the plain column occupied, so the ratio can be reported.
+    plain_bytes: usize,
+}
+
+impl ChunkSource for EncodedChunks {
+    fn decode(&self, column: usize) -> Result<Column> {
+        let c = self.columns[column].as_ref().ok_or_else(|| {
+            crate::error::Diagnostic::exec(format!("column {column} is not encoded"))
+        })?;
+        Ok(crate::storage::encoding::decode(&c.encoded, c.validity.clone()))
+    }
+
+    fn byte_size(&self) -> usize {
+        self.columns
+            .iter()
+            .flatten()
+            .map(|c| c.encoded.byte_size())
+            .sum()
+    }
+
+    fn is_deferred(&self) -> bool {
+        false
+    }
+
+    fn cache_decoded(&self) -> bool {
+        false
+    }
+
+    fn describe(&self, column: usize) -> Option<(&'static str, f64)> {
+        let c = self.columns.get(column)?.as_ref()?;
+        Some((
+            c.encoded.name(),
+            c.plain_bytes as f64 / c.encoded.byte_size().max(1) as f64,
+        ))
+    }
+
+    fn encoded(
+        &self,
+        column: usize,
+    ) -> Option<(&crate::storage::encoding::Encoded, Option<&Bitmap>)> {
+        let c = self.columns.get(column)?.as_ref()?;
+        Some((&c.encoded, c.validity.as_ref()))
+    }
 }
 
 #[derive(Debug)]
@@ -121,9 +222,31 @@ impl RowGroup {
             .zip(&stats)
             .map(|(col, st)| build_bloom(col, st, num_rows))
             .collect();
+        // Encode what pays. An encoded column is left out of the cache so the
+        // lazy path decodes it on first use, exactly as a Parquet chunk is.
+        let mut resident: Vec<Option<Arc<Column>>> = Vec::with_capacity(columns.len());
+        let mut encoded: Vec<Option<EncodedColumn>> = Vec::with_capacity(columns.len());
+        for column in columns {
+            match crate::storage::encoding::encode(&column) {
+                Some(e) => {
+                    encoded.push(Some(EncodedColumn {
+                        encoded: e,
+                        validity: column.validity.clone(),
+                        plain_bytes: column.byte_size(),
+                    }));
+                    resident.push(None);
+                }
+                None => {
+                    encoded.push(None);
+                    resident.push(Some(Arc::new(column)));
+                }
+            }
+        }
+        let any = encoded.iter().any(|e| e.is_some());
+
         RowGroup {
-            columns: Mutex::new(columns.into_iter().map(|c| Some(Arc::new(c))).collect()),
-            source: None,
+            columns: Mutex::new(resident),
+            source: any.then(|| Arc::new(EncodedChunks { columns: encoded }) as Arc<dyn ChunkSource>),
             num_rows,
             stats,
             blooms,
@@ -185,6 +308,12 @@ impl RowGroup {
         // Decoded outside the lock: a chunk can take milliseconds, and holding
         // the cache while it does would serialize every other column.
         let decoded = Arc::new(source.decode(i)?);
+        if !source.cache_decoded() {
+            // An in-memory encoding is cheap to unpack and expensive to keep,
+            // so the caller gets the column and the row group keeps only the
+            // encoded bytes.
+            return Ok(decoded);
+        }
         let mut cache = self.columns.lock().expect("column cache lock");
         // Another caller may have decoded it meanwhile; either copy is correct,
         // so keep whichever landed first and let this one drop.
@@ -202,8 +331,32 @@ impl RowGroup {
         (0..self.stats.len()).map(|i| self.column(i)).collect()
     }
 
+    /// Whether reading this row group means work worth avoiding.
+    ///
+    /// An encoded in-memory row group has a source but is not *pending* in this
+    /// sense: unpacking it is cheap, and callers that use this to decide
+    /// whether to touch the data at all should not be put off by it.
     pub fn is_pending(&self) -> bool {
+        self.source.as_ref().is_some_and(|s| s.is_deferred())
+    }
+
+    /// Whether any column is held in an encoded form.
+    pub fn is_encoded(&self) -> bool {
         self.source.is_some()
+    }
+
+    /// The encoding of one column and how much it saved, if it has one.
+    pub fn encoding_of(&self, column: usize) -> Option<(&'static str, f64)> {
+        self.source.as_ref()?.describe(column)
+    }
+
+    /// The encoded form of a column, for a predicate that can be answered
+    /// without decoding it.
+    pub fn encoded(
+        &self,
+        column: usize,
+    ) -> Option<(&crate::storage::encoding::Encoded, Option<&Bitmap>)> {
+        self.source.as_ref()?.encoded(column)
     }
 
     /// How many columns are decoded and in memory right now. The storage

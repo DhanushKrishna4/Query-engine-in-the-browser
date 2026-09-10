@@ -75,6 +75,9 @@ pub struct OperatorStats {
     /// different shapes of predicate, and seeing which one fired is the whole
     /// point of showing the numbers.
     pub row_groups_bloom_pruned: u64,
+    /// Of the pruned groups, how many an encoded column ruled out exactly --
+    /// a zone map narrows to a range, an encoding answers the predicate.
+    pub row_groups_encoding_pruned: u64,
     /// Filter-only: how many times a selection got sparse enough to be worth
     /// materializing.
     pub compactions: u64,
@@ -288,6 +291,9 @@ pub struct ExecOptions {
     pub zone_map_pruning: bool,
     /// Whether scans consult per-row-group bloom filters for equality.
     pub bloom_filters: bool,
+    /// Whether a predicate may be answered on an encoded column without
+    /// decoding it.
+    pub encodings: bool,
     /// Whether a selective predicate on an indexed column may be served by a
     /// B+ tree lookup instead of a scan.
     pub index_scans: bool,
@@ -310,6 +316,7 @@ impl Default for ExecOptions {
             aggregate_pushdown: true,
             zone_map_pruning: true,
             bloom_filters: true,
+            encodings: true,
             index_scans: true,
             batch_size: DEFAULT_BATCH_SIZE,
             // Off, on the evidence. Measured on the 1M-row taxi fixture, total
@@ -384,6 +391,17 @@ impl ExecOptions {
         ExecOptions {
             zone_map_pruning: false,
             bloom_filters: false,
+            ..Default::default()
+        }
+    }
+
+    /// Predicates are evaluated on decoded columns only.
+    ///
+    /// The slow path the encoded fast path has to agree with: same rows, same
+    /// answers, just more of them handed to the filter.
+    pub fn without_encodings() -> ExecOptions {
+        ExecOptions {
+            encodings: false,
             ..Default::default()
         }
     }
@@ -517,6 +535,8 @@ pub struct ScanExec {
     /// Whether the per-row-group bloom filters are consulted after the zone map
     /// fails to rule a group out.
     blooms: bool,
+    /// Whether predicates are tried against the encoded columns first.
+    encodings: bool,
     zone_maps: bool,
     row_group: usize,
     offset_in_group: usize,
@@ -542,6 +562,7 @@ impl ScanExec {
             schema,
             prune: None,
             blooms: true,
+            encodings: true,
             zone_maps: true,
             row_group: 0,
             offset_in_group: 0,
@@ -594,12 +615,48 @@ impl ScanExec {
         self
     }
 
+    /// Whether a predicate may be answered on an encoded column rather than a
+    /// decoded one. Off is the slow path every fast path has to agree with.
+    pub fn with_encodings(mut self, on: bool) -> ScanExec {
+        self.encodings = on;
+        self
+    }
+
     /// Keep the predicate for the bloom filters but stop consulting zone maps.
     /// Only the agreement tests want this: it isolates one structure from the
     /// other so each can be shown to lose no rows on its own.
     pub fn without_zone_maps(mut self) -> ScanExec {
         self.zone_maps = false;
         self
+    }
+
+    /// Whether an encoded column proves this row group holds nothing matching.
+    ///
+    /// Only a conjunction of `column <op> literal` tests is consulted, and only
+    /// where the column is encoded. Everything else is left to the filter
+    /// above, which runs regardless -- so a `false` here is "not proven", never
+    /// "no rows match".
+    fn encoding_rules_out(&self, rg: &crate::storage::RowGroup) -> bool {
+        if !rg.is_encoded() {
+            return false;
+        }
+        let Some((predicate, rel)) = self.prune.as_ref() else {
+            return false;
+        };
+        let mut conjuncts = Vec::new();
+        predicate.clone().split_conjuncts(&mut conjuncts);
+
+        // Every conjunct must hold, so one that nothing can satisfy rules the
+        // whole group out.
+        conjuncts.iter().any(|c| {
+            let Some((column, op, value)) = comparison_on(c, *rel) else {
+                return false;
+            };
+            let Some((encoded, _)) = rg.encoded(column) else {
+                return false;
+            };
+            !crate::storage::encoding::can_match(encoded, op, &value)
+        })
     }
 
     /// Whether this row group can be skipped without reading any values.
@@ -652,6 +709,26 @@ impl Operator for ScanExec {
                     self.row_group += 1;
                     continue;
                 }
+                // Before decoding anything, ask the encoded columns whether
+                // any row can match. A dictionary answers with one comparison
+                // per distinct value, a run-length column with one per run, a
+                // frame-of-reference block on its own range.
+                //
+                // Only the *nothing matches* answer is acted on, and that is a
+                // deliberate retreat from where this started. Narrowing to the
+                // matching rows was implemented, agreed with the decoded path
+                // on all 1,010 corpus queries, and measured 3x slower: the
+                // filter above re-evaluates the predicate regardless, so the
+                // encoded scan is redundant work, and a scalar bitmap loop
+                // cannot beat a vectorized comparison over decoded values.
+                // Proving the group empty is different -- it skips the decode
+                // and the filter and the batch entirely.
+                if self.encodings && self.encoding_rules_out(rg) {
+                    self.stats.row_groups_encoding_pruned += 1;
+                    self.stats.row_groups_pruned += 1;
+                    self.row_group += 1;
+                    continue;
+                }
                 self.stats.row_groups_scanned += 1;
                 // Only now, past the zone maps and the bloom filters, is any
                 // data actually read. For a Parquet table a pruned group costs
@@ -668,6 +745,7 @@ impl Operator for ScanExec {
             }
             let len = self.batch_size.min(rg.num_rows - self.offset_in_group);
             let columns: Vec<Arc<Column>> = self.group_columns.clone();
+
             let selection = Selection::Range {
                 offset: self.offset_in_group,
                 len,
@@ -1169,7 +1247,8 @@ fn build_node(
                             let mut scan = ScanExec::new(table)
                                 .with_batch_size(options.batch_size)
                                 .with_projection(projection.clone(), Arc::clone(schema))
-                                .with_bloom_filters(options.bloom_filters);
+                                .with_bloom_filters(options.bloom_filters)
+                            .with_encodings(options.encodings);
                             if options.zone_map_pruning || options.bloom_filters {
                                 scan = scan.with_prune_predicate(predicate.clone(), *rel);
                             }
@@ -1599,6 +1678,51 @@ fn sorted_on(op: Box<dyn Operator>, keys: &[CompiledExpr]) -> Box<dyn Operator> 
         })
         .collect();
     Box::new(SortExec::new(op, sort_keys, schema))
+}
+
+/// A `column <op> literal` test on the scanned relation, oriented so the column
+/// is on the left.
+///
+/// The same shape the zone maps and the index reason about, and refused for the
+/// same reasons: a NULL literal makes the comparison UNKNOWN for every row, and
+/// a literal of a different type would be compared in a way SQL did not ask
+/// for -- the encodings check that themselves and decline.
+fn comparison_on(
+    e: &crate::plan::BoundExpr,
+    rel: RelId,
+) -> Option<(usize, crate::parser::ast::BinaryOperator, crate::types::ScalarValue)> {
+    use crate::parser::ast::BinaryOperator;
+    use crate::plan::BoundExprKind;
+
+    let BoundExprKind::Binary { op, left, right } = &e.kind else {
+        return None;
+    };
+    if !op.is_comparison() {
+        return None;
+    }
+    let column = |x: &crate::plan::BoundExpr| match &x.kind {
+        BoundExprKind::Column { rel: r, index, .. } if *r == rel => Some(*index),
+        _ => None,
+    };
+    let literal = |x: &crate::plan::BoundExpr| match &x.kind {
+        BoundExprKind::Literal(v) if !v.is_null() => Some(v.clone()),
+        _ => None,
+    };
+    let flip = |o: BinaryOperator| match o {
+        BinaryOperator::Lt => BinaryOperator::Gt,
+        BinaryOperator::LtEq => BinaryOperator::GtEq,
+        BinaryOperator::Gt => BinaryOperator::Lt,
+        BinaryOperator::GtEq => BinaryOperator::LtEq,
+        other => other,
+    };
+
+    if let (Some(c), Some(v)) = (column(left), literal(right)) {
+        return Some((c, *op, v));
+    }
+    if let (Some(v), Some(c)) = (literal(left), column(right)) {
+        return Some((c, flip(*op), v));
+    }
+    None
 }
 
 fn relations_of(ctx: &EvalContext) -> BTreeSet<RelId> {

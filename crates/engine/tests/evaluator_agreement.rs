@@ -26,6 +26,9 @@
 //!   * zone-map pruning disabled, since a scan that skips a row group must skip
 //!     one that truly had nothing in it;
 //!   * bloom filters disabled, for the same reason and on a different structure;
+//!   * encodings disabled, so that a predicate answered on a dictionary's codes
+//!     or a block's packed values agrees with the same predicate answered on
+//!     the decoded column;
 //!   * index scans disabled, which is the sharpest of the lot -- an index scan
 //!     reads a completely different set of rows in a completely different way,
 //!     and must still produce the same answer.
@@ -85,7 +88,7 @@ fn execution_strategies_agree() {
     // A streaming aggregate emits groups in key order where a hash aggregate
     // emits them in insertion order; `GROUP BY city LIMIT 3` over seven cities
     // then returns a different three, and neither is wrong.
-    let configs: [(&str, ExecOptions, bool); 8] = [
+    let configs: [(&str, ExecOptions, bool); 9] = [
         ("scalar evaluator", ExecOptions::scalar(), false),
         ("nested loop joins", ExecOptions::nested_loop_joins(), false),
         ("sort-merge joins", ExecOptions::merge_joins(), true),
@@ -93,6 +96,7 @@ fn execution_strategies_agree() {
         ("optimizer disabled", ExecOptions::unoptimized(), false),
         ("zone maps disabled", ExecOptions::without_pruning(), false),
         ("bloom filters disabled", ExecOptions::without_bloom_filters(), false),
+        ("encodings disabled", ExecOptions::without_encodings(), false),
         ("index scans disabled", ExecOptions::without_index_scans(), false),
     ];
     let vectorized = ExecOptions::default();

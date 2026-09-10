@@ -7,6 +7,7 @@ pub mod btree;
 pub mod parquet;
 pub mod column;
 pub mod csv;
+pub mod encoding;
 pub mod rowgroup;
 pub mod schema;
 pub mod table;

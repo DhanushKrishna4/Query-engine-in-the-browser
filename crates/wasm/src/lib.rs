@@ -497,6 +497,9 @@ struct ZoneInfo {
     nulls: usize,
     distinct: Option<usize>,
     bloom: bool,
+    /// The encoding this column is held in, and how much smaller it made it.
+    encoding: Option<String>,
+    ratio: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -680,6 +683,8 @@ impl QueryEngine {
                             nulls: rg.stats[i].null_count,
                             distinct: rg.stats[i].distinct_count_estimate,
                             bloom: rg.blooms[i].is_some(),
+                            encoding: rg.encoding_of(i).map(|(n, _)| n.to_string()),
+                            ratio: rg.encoding_of(i).map(|(_, r)| r),
                         })
                         .collect(),
                 })

@@ -611,3 +611,151 @@ monitor
 79
 mouse
 77
+
+# --- column encodings -------------------------------------------------------
+#
+# `city` and `department` are low-cardinality and dictionary-encoded; `age` and
+# `salary` are bit-packed. Every query below runs against encoded columns, and
+# `evaluator_agreement.rs` runs each of them again with the encodings off. The
+# answers must be identical either way -- an encoding that compresses well and
+# answers differently is worse than no encoding at all.
+
+query T rowsort
+SELECT name FROM people WHERE city = 'London'
+----
+Ada Lovelace
+Alan Turing
+Tim Berners-Lee
+
+query T rowsort
+SELECT name FROM people WHERE city < 'London'
+----
+Edsger Dijkstra
+Katherine Johnson
+Margaret Hamilton
+
+query T rowsort
+SELECT name FROM people WHERE city >= 'New York'
+----
+Barbara Liskov
+Donald Knuth
+Frances Allen
+Grace Hopper
+
+query T rowsort
+SELECT name FROM people WHERE city <> 'London'
+----
+Barbara Liskov
+Donald Knuth
+Edsger Dijkstra
+Frances Allen
+Grace Hopper
+Katherine Johnson
+Margaret Hamilton
+
+# A value inside the column's min/max that is not in the dictionary. The zone
+# map cannot rule this out; the dictionary can, exactly.
+query T
+SELECT name FROM people WHERE city = 'Chicago'
+----
+
+query T
+SELECT name FROM people WHERE department = 'Marketing'
+----
+
+query I
+SELECT COUNT(*) FROM people WHERE city = 'Chicago' AND age > 30
+----
+0
+
+# Bit-packed integers, including the boundaries of the packed range.
+query TI rowsort
+SELECT name, age FROM people WHERE age > 50
+----
+Donald Knuth
+61
+Edsger Dijkstra
+52
+Frances Allen
+57
+
+query TI rowsort
+SELECT name, age FROM people WHERE age BETWEEN 40 AND 45
+----
+Alan Turing
+41
+Grace Hopper
+45
+Katherine Johnson
+44
+
+query I
+SELECT COUNT(*) FROM people WHERE age = 36
+----
+1
+
+query I
+SELECT COUNT(*) FROM people WHERE age > 1000
+----
+0
+
+# NULLs must not be matched by an encoded predicate: `score` is NULL for two
+# rows, and a comparison against NULL is UNKNOWN however the column is stored.
+query IR rowsort
+SELECT id, score FROM people WHERE score > 9
+----
+1
+9.500
+5
+9.500
+6
+9.900
+8
+9.100
+
+query I
+SELECT COUNT(*) FROM people WHERE score IS NULL
+----
+2
+
+# Encoded columns through a join and a group by.
+query TI rowsort
+SELECT p.city, COUNT(*) FROM people p JOIN orders o ON p.id = o.person_id GROUP BY p.city
+----
+Cambridge
+1
+Hampton
+1
+London
+6
+New York
+3
+Yorktown
+1
+
+query TT rowsort
+SELECT DISTINCT city, department FROM people
+----
+Austin
+Research
+Cambridge
+Engineering
+Hampton
+Analytics
+London
+Engineering
+London
+Research
+New York
+Engineering
+Palo Alto
+Research
+Yorktown
+Analytics
+
+query T
+SELECT city FROM people ORDER BY city LIMIT 3
+----
+Austin
+Cambridge
+Hampton

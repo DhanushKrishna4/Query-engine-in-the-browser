@@ -496,6 +496,9 @@ fn scan_emits_multiple_batches_and_row_groups() {
     let scan = &r.stats.children[0].children[0];
     assert_eq!(scan.stats.row_groups_pruned, 4);
     assert_eq!(scan.stats.row_groups_scanned, 1);
+    // The whole surviving group: the encodings prove a group *empty* without
+    // decoding it, but they do not narrow within one -- see the note in
+    // `ScanExec` for why that retreat was measured rather than assumed.
     assert_eq!(scan.stats.rows_out, 904);
 
     // A limit stops the scan early instead of draining the table.
@@ -1246,11 +1249,18 @@ fn bloom_filters_reject_groups_zone_maps_cannot() {
     assert_eq!(scan.stats.row_groups_scanned, 0);
     assert_eq!(r.num_rows(), 0);
 
-    // Turning them off reads everything and reaches the same answer.
+    // Turning them off reads everything and reaches the same answer. The
+    // encodings have to come off too: `token` is bit-packed, so the fast path
+    // would answer the predicate on the packed values and the scan would emit
+    // nothing again -- correct, but not what this test is isolating.
     let plain = e
         .execute_with(
             "SELECT id FROM wide WHERE token = 4321",
-            &ExecOptions::without_bloom_filters(),
+            &ExecOptions {
+                bloom_filters: false,
+                encodings: false,
+                ..Default::default()
+            },
         )
         .unwrap();
     let scan = &plain.stats.children[0].children[0];

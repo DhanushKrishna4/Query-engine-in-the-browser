@@ -514,9 +514,8 @@ fn the_cost_model_prefers_hashing_to_a_nested_loop() {
 #[test]
 fn every_operator_reports_its_estimate_beside_the_truth() {
     let e = star();
-    let r = e
-        .execute("SELECT dim_b, COUNT(*) FROM facts WHERE id < 1000 GROUP BY dim_b")
-        .unwrap();
+    let sql = "SELECT dim_b, COUNT(*) FROM facts WHERE id < 1000 GROUP BY dim_b";
+    let r = e.execute(sql).unwrap();
 
     fn check(node: &crate::exec::StatsNode) {
         assert!(
@@ -531,7 +530,12 @@ fn every_operator_reports_its_estimate_beside_the_truth() {
     }
     check(&r.stats);
 
-    // A scan's estimate comes straight from the catalog, so it is exact.
+    // A scan's estimate comes straight from the catalog, so it is exact --
+    // provided the scan actually emits every row. An encoded column can answer
+    // the predicate before the rows are decoded, and then the scan emits fewer
+    // than the catalog said it held, which is a better plan and a worse
+    // q-error. Measured with that off, so this asserts the estimate rather
+    // than the encoding.
     fn scan(node: &crate::exec::StatsNode) -> &crate::exec::StatsNode {
         if node.stats.name == "Scan" {
             node
@@ -539,7 +543,10 @@ fn every_operator_reports_its_estimate_beside_the_truth() {
             scan(&node.children[0])
         }
     }
-    assert_eq!(scan(&r.stats).stats.q_error(), Some(1.0));
+    let plain = e
+        .execute_with(sql, &crate::exec::ExecOptions::without_encodings())
+        .unwrap();
+    assert_eq!(scan(&plain.stats).stats.q_error(), Some(1.0));
 }
 
 // ---------------------------------------------------------------------------

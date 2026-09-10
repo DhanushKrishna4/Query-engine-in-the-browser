@@ -114,7 +114,8 @@ fn main() -> ExitCode {
                         || v == "no-top-n"
                         || v == "merge-join"
                         || v == "stream-aggregate"
-                        || v == "no-eager-aggregate" =>
+                        || v == "no-eager-aggregate"
+                        || v == "no-encodings" =>
                 {
                     bench_baseline = v
                 }
@@ -425,13 +426,17 @@ impl Repl {
                 rg.num_rows,
                 human_bytes(rg.byte_size())
             );
-            for (f, s) in t.schema.fields.iter().zip(&rg.stats) {
+            for (i, (f, s)) in t.schema.fields.iter().zip(&rg.stats).enumerate() {
                 let show = |v: &Option<ScalarValue>| match v {
                     Some(x) => x.to_string(),
                     None => "-".to_string(),
                 };
+                let encoding = match rg.encoding_of(i) {
+                    Some((name, ratio)) => format!("  {name} {ratio:.1}x"),
+                    None => String::new(),
+                };
                 println!(
-                    "    {:<20} {:<12} min={:<20} max={:<20} nulls={:<6} distinct~{}",
+                    "    {:<20} {:<12} min={:<20} max={:<20} nulls={:<6} distinct~{}{}",
                     f.name,
                     f.data_type.to_string(),
                     show(&s.min),
@@ -439,7 +444,8 @@ impl Repl {
                     s.null_count,
                     s.distinct_count_estimate
                         .map(|d| d.to_string())
-                        .unwrap_or_else(|| ">8192".into())
+                        .unwrap_or_else(|| ">8192".into()),
+                    encoding
                 );
             }
             let filtered: Vec<&str> = t
@@ -750,6 +756,7 @@ fn run_benchmark(
         "merge-join" => ExecOptions::merge_joins(),
         "stream-aggregate" => ExecOptions::sorted_aggregates(),
         "no-eager-aggregate" => ExecOptions::without_aggregate_pushdown(),
+        "no-encodings" => ExecOptions::without_encodings(),
         "no-reorder" => ExecOptions::without_join_reorder(),
         "no-decorrelation" => ExecOptions::without_decorrelation(),
         "no-top-n" => ExecOptions::without_top_n(),
