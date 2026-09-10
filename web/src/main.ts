@@ -1,12 +1,14 @@
-// The page. Everything below the boundary is Rust; this file only fetches
-// data, hands buffers in, and reads buffers out.
-import init, { QueryEngine, ColumnKind } from "../pkg/qe.js";
+// The page. Everything below the boundary is Rust, and since step 21 it is in
+// a worker: this file fetches data, hands buffers over, and draws what comes
+// back. It never touches wasm memory, and a query can no longer freeze it.
+import { ColumnKind } from "../pkg/qe.js";
 // The bundler hashes and moves the module, so its size is asked of the URL it
 // ends up at rather than of a path written down here.
 import wasmUrl from "../pkg/qe_bg.wasm?url";
+import { EngineClient, RESULT_CAP, type Progress } from "./client";
+import type { ColumnData, ResultChunk } from "./protocol";
 import { SqlEditor, type SpanError } from "./editor";
 import type {
-  CheckInfo,
   IndexInfo,
   OutcomeMeta,
   PhysicalNode,
@@ -22,11 +24,7 @@ import type {
   TraceStep,
 } from "./types";
 
-type Outcome = ReturnType<QueryEngine["execute"]>;
-
-/** The wasm module's exports, for reading typed arrays out of its memory. */
-let wasm: { memory: WebAssembly.Memory };
-let engine: QueryEngine;
+const engine = new EngineClient();
 let editor: SqlEditor;
 let storageTable = "people";
 /** The `.wasm`'s size, and whether the server compressed it on the way. */
@@ -301,7 +299,7 @@ async function readAll(
 // ---------------------------------------------------------------------------
 
 /**
- * A column as typed-array views onto the module's memory.
+ * A column, ready to read row by row.
  *
  * `values` is deliberately loose: which typed array it is depends on `kind`,
  * and the switch in `cell` is the only place that knows. Naming the union here
@@ -322,41 +320,29 @@ interface ColumnView {
  * because allocating inside wasm can grow the memory and growing detaches every
  * ArrayBuffer built on the old one.
  */
-function columnViews(outcome: Outcome, index: number): ColumnView {
-  const buffer = wasm.memory.buffer;
-  const kind = outcome.kind(index);
-  const rows = outcome.len(index);
-  const ptr = outcome.valuesPtr(index);
-  const validityPtr = outcome.validityPtr(index);
-  // A null pointer means no row in the column is NULL, so the per-row check
-  // can be skipped entirely.
-  const validity = validityPtr === 0 ? null : new Uint8Array(buffer, validityPtr, Math.ceil(rows / 8));
-
-  let values = null;
-  let offsets = null;
+/**
+ * Wrap the worker's buffers in the typed arrays their kind calls for.
+ *
+ * The buffers were transferred, so this is a view and not a copy -- the copy
+ * happened once, in the worker, bounded by what the grid draws.
+ */
+function columnViews(column: ColumnData): ColumnView {
+  const { kind, rows, validity, values, offsets } = column;
   switch (kind) {
     case ColumnKind.Int32:
     case ColumnKind.Date32:
-      values = new Int32Array(buffer, ptr, rows);
-      break;
+      return { kind, rows, validity, values: new Int32Array(values), offsets: null };
     case ColumnKind.Int64:
     case ColumnKind.Timestamp:
-      values = new BigInt64Array(buffer, ptr, rows);
-      break;
+      return { kind, rows, validity, values: new BigInt64Array(values), offsets: null };
     case ColumnKind.Float64:
-      values = new Float64Array(buffer, ptr, rows);
-      break;
+      return { kind, rows, validity, values: new Float64Array(values), offsets: null };
     case ColumnKind.Boolean:
-      values = new Uint8Array(buffer, ptr, Math.ceil(rows / 8));
-      break;
     case ColumnKind.Utf8:
-      values = new Uint8Array(buffer, ptr, outcome.valuesBytes(index));
-      offsets = new Uint32Array(buffer, outcome.offsetsPtr(index), rows + 1);
-      break;
+      return { kind, rows, validity, values: new Uint8Array(values), offsets };
     default:
-      break;
+      return { kind, rows, validity, values: null, offsets: null };
   }
-  return { kind, rows, values, offsets, validity };
 }
 
 const decoder = new TextDecoder();
@@ -431,40 +417,44 @@ function resultTable(meta: OutcomeMeta): HTMLTableElement {
 }
 
 /**
- * Append one chunk's rows, up to `budget` of them.
+ * Append one chunk's rows, up to `budget` of them. Returns how many it wrote.
  *
- * Returns how many it wrote. The views are built here and used here: a typed
- * array over wasm memory is valid only until wasm allocates again, and the
- * next chunk allocates.
+ * Built in a fragment and attached once. Inserting two thousand rows straight
+ * into a table that is already in the document invalidates its layout two
+ * thousand times, and with the engine moved to a worker that became the
+ * slowest thing on the page: eleven long tasks and a 471 ms one among them,
+ * against 1.3 seconds for the query itself.
+ *
+ * Rows are also built as one HTML string per row rather than cell by cell.
+ * `insertCell` plus `textContent` is thirty thousand DOM operations for a full
+ * grid; the escaping is the same work either way.
  */
-function appendRows(
-  table: HTMLTableElement,
-  outcome: Outcome,
-  meta: OutcomeMeta,
-  budget: number
-): number {
-  const views = meta.columns.map((_, i) => columnViews(outcome, i));
+function appendRows(table: HTMLTableElement, chunk: ResultChunk, budget: number): number {
+  const views = chunk.columns.map(columnViews);
   const available = Math.min(views[0]?.rows ?? 0, budget);
-  const tbody = table.tBodies[0];
+  if (available === 0) return 0;
+
+  const parts: string[] = [];
   for (let row = 0; row < available; row++) {
-    const tr = tbody.insertRow();
+    parts.push("<tr>");
     for (let c = 0; c < views.length; c++) {
-      const td = tr.insertCell();
       const value = cell(views[c], row);
       if (value === null) {
-        td.className = "null";
-        td.textContent = "NULL";
+        parts.push('<td class="null">NULL</td>');
       } else {
-        td.className = views[c].kind === ColumnKind.Utf8 ? "" : "num";
-        td.textContent = value;
+        const cls = views[c].kind === ColumnKind.Utf8 ? "" : ' class="num"';
+        parts.push(`<td${cls}>${escapeHtml(value)}</td>`);
       }
     }
+    parts.push("</tr>");
   }
+  table.tBodies[0].insertAdjacentHTML("beforeend", parts.join(""));
   return available;
 }
 
-function renderResults(outcome: Outcome, meta: OutcomeMeta) {
+function renderResults(chunk: ResultChunk) {
   const body = $("tab-results");
+  const meta = chunk.meta;
   body.textContent = "";
   if (meta.columns.length === 0) {
     body.innerHTML = '<p class="empty">no columns</p>';
@@ -472,7 +462,7 @@ function renderResults(outcome: Outcome, meta: OutcomeMeta) {
   }
 
   const table = resultTable(meta);
-  const rows = appendRows(table, outcome, meta, Infinity);
+  const rows = appendRows(table, chunk, Infinity);
   if (rows === 0) {
     body.innerHTML = '<p class="empty">no rows</p>';
     return;
@@ -679,11 +669,11 @@ function renderPlan(planned: PlanInfo) {
  * projection, a filter -- state no reason, which is the honest thing for them
  * to say.
  */
-function renderPhysical(sql: string) {
+async function renderPhysical(sql: string) {
   const body = $("tab-physical");
-  let root;
+  let root: PhysicalNode;
   try {
-    root = JSON.parse(engine.physicalPlan(sql));
+    root = await engine.physicalPlan(sql);
   } catch (e) {
     body.innerHTML = `<div class="error">${escapeHtml(message(e))}</div>`;
     return;
@@ -706,7 +696,7 @@ function renderPhysical(sql: string) {
       lines.push(`<div class="phys-node phys-why">${pad}     ${escapeHtml(node.reason)}</div>`);
     }
     node.children.forEach((c: PhysicalNode) => walk(c, depth + 1));
-  })(root as PhysicalNode, 0);
+  })(root, 0);
   body.innerHTML = `<div class="phys">${lines.join("")}</div>`;
 }
 
@@ -823,12 +813,12 @@ function humanBytes(n: number): string {
  */
 const ROW_GROUPS_SHOWN = 12;
 
-function renderStorage(table: string) {
+async function renderStorage(table: string) {
   storageTable = table;
   const body = $("tab-storage");
   let info: StorageInfo;
   try {
-    info = JSON.parse(engine.storage(table));
+    info = await engine.storage(table);
   } catch (e) {
     body.innerHTML = `<p class="empty">${escapeHtml(message(e))}</p>`;
     return;
@@ -841,7 +831,7 @@ function renderStorage(table: string) {
     `${humanBytes(info.bytes)}` +
     (info.pending ? " · lazily decoded from Parquet" : " · fully resident") +
     `</span>` +
-    tableSwitcher(table, renderStorage) +
+    tableSwitcher(table, (name) => void renderStorage(name)) +
     `</div>`;
 
   const verdicts = lastScans.get(table) ?? [];
@@ -895,7 +885,7 @@ function renderStorage(table: string) {
 }
 
 function tableSwitcher(current: string, onPick: (name: string) => void): string {
-  const tables = JSON.parse(engine.catalog()) as TableInfo[];
+  const tables = engine.catalog();
   const id = `switch-${Math.random().toString(36).slice(2)}`;
   setTimeout(() => {
     const select = document.getElementById(id) as HTMLSelectElement | null;
@@ -926,9 +916,9 @@ function tableSwitcher(current: string, onPick: (name: string) => void): string 
  * every node of an index over a million rows would be tens of thousands of
  * rectangles and no more informative.
  */
-function renderIndex() {
+async function renderIndex() {
   const body = $("tab-index");
-  const tables = JSON.parse(engine.catalog()) as TableInfo[];
+  const tables = engine.catalog();
   const indexed = tables.flatMap((t) =>
     t.indexes.map((c) => ({ table: t.name, column: c }))
   );
@@ -953,9 +943,13 @@ function renderIndex() {
       const table = button.dataset.t!;
       const column = button.dataset.c!;
       button.addEventListener("click", () => {
-        engine.createIndex(table, column);
-        indexChoice = { table, column };
-        renderIndex();
+        void (async () => {
+          await engine.createIndex(table, column);
+          indexChoice = { table, column };
+          // A new index means new completions to offer, too.
+          editor.refreshSchema();
+          await renderIndex();
+        })();
       });
     }
     return;
@@ -976,10 +970,10 @@ function renderIndex() {
   let info: IndexInfo;
   let error: string | null = null;
   try {
-    info = JSON.parse(engine.indexTree(choice.table, choice.column, probe || undefined, 9));
+    info = await engine.indexTree(choice.table, choice.column, probe || undefined, 9);
   } catch (e) {
     error = message(e);
-    info = JSON.parse(engine.indexTree(choice.table, choice.column, undefined, 9));
+    info = await engine.indexTree(choice.table, choice.column, undefined, 9);
   }
 
   body.innerHTML =
@@ -1010,11 +1004,11 @@ function renderIndex() {
   pick.addEventListener("change", () => {
     const [table, column] = pick.value.split("|");
     indexChoice = { table, column };
-    renderIndex();
+    void renderIndex();
   });
-  $("probe-go").addEventListener("click", renderIndex);
+  $("probe-go").addEventListener("click", () => void renderIndex());
   $("probe").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") renderIndex();
+    if (e.key === "Enter") void renderIndex();
   });
 }
 
@@ -1259,9 +1253,6 @@ async function share() {
 
 
 async function boot() {
-  wasm = await init();
-  engine = new QueryEngine();
-
   const shared = fromUrl();
   if (shared.dataset) storageTable = shared.dataset;
 
@@ -1270,11 +1261,12 @@ async function boot() {
     initial: shared.query ?? EXAMPLES[0].sql,
     onRun: run,
     // Re-parsed on every keystroke to place the underline. Cheap: it stops
-    // before the optimizer, which is the part that costs anything.
-    check: (text): SpanError | null => {
-      const raw = engine.check(text);
-      if (raw === "null") return null;
-      const info = JSON.parse(raw) as CheckInfo;
+    // before the optimizer, which is the part that costs anything -- and it
+    // happens in the worker, so even a pathological query cannot make typing
+    // stutter.
+    check: async (text): Promise<SpanError | null> => {
+      const info = await engine.check(text);
+      if (!info) return null;
       return {
         message: info.hint ? `${info.message} — ${info.hint}` : info.message,
         start: info.start,
@@ -1282,7 +1274,7 @@ async function boot() {
       };
     },
     tables: () =>
-      (JSON.parse(engine.catalog()) as TableInfo[]).map((t) => ({
+      engine.catalog().map((t) => ({
         name: t.name,
         columns: t.columns.map((c) => ({ name: c.name, type: c.type })),
       })),
@@ -1309,7 +1301,7 @@ async function boot() {
   for (const dataset of DATASETS) {
     const { bytes, cached } = await fetchDataset(dataset.url, db);
     if (cached) cachedCount++;
-    engine.load(dataset.name, bytes);
+    await engine.load(dataset.name, bytes);
   }
   $("load-status").textContent =
     cachedCount > 0 ? `${cachedCount} from IndexedDB` : "fetched";
@@ -1327,8 +1319,8 @@ async function boot() {
       }
       // Built when opened rather than after every query: neither depends on the
       // last result, and drawing a tree nobody is looking at is waste.
-      if (tab.dataset.tab === "storage") renderStorage(storageTable);
-      if (tab.dataset.tab === "index") renderIndex();
+      if (tab.dataset.tab === "storage") void renderStorage(storageTable);
+      if (tab.dataset.tab === "index") void renderIndex();
     });
   }
 
@@ -1341,7 +1333,7 @@ async function boot() {
 }
 
 function renderCatalog() {
-  const tables = JSON.parse(engine.catalog()) as TableInfo[];
+  const tables = engine.catalog();
   $("catalog").innerHTML = tables
     .map(
       (t) =>
@@ -1409,7 +1401,7 @@ async function loadCollection(collection: Collection, button: HTMLButtonElement)
 
   try {
     // Noted before the load, so a replaced table can be named afterwards.
-    const existing = (JSON.parse(engine.catalog()) as TableInfo[]).map((t) => t.name);
+    const existing = engine.catalog().map((t) => t.name);
     const db = await openDb();
     for (const [i, table] of collection.tables.entries()) {
       const of =
@@ -1423,7 +1415,7 @@ async function loadCollection(collection: Collection, button: HTMLButtonElement)
       // Yield so the button's last state paints before the engine takes the
       // thread to parse a footer.
       await new Promise((r) => setTimeout(r, 0));
-      engine.load(table.name, bytes);
+      await engine.load(table.name, bytes);
     }
     const clashes = existing.filter((name) =>
       collection.tables.some((t) => t.name === name)
@@ -1451,63 +1443,24 @@ async function loadCollection(collection: Collection, button: HTMLButtonElement)
   }
 }
 
-/** Rows the grid will draw. The engine computes every row either way. */
-const RESULT_CAP = 10_000;
-
-/**
- * Rows a table can hold before a query is run a batch at a time.
- *
- * The engine runs on the main thread, so a query that takes a second takes the
- * tab with it: no progress, no repaint, no way to tell a slow query from a
- * hung one. Streaming hands back a batch at a time and this yields to the
- * event loop between them, which buys a row counter that moves.
- *
- * Small tables go the whole-result route because at three rows the counter
- * would flash once and the yields would be the slowest part of the query.
- */
-const STREAM_ABOVE_ROWS = 200_000;
 
 /** Set while a query is running, so a second Run cannot interleave with it. */
 let running = false;
-
-/**
- * Yield to the event loop, without the throttling `setTimeout` carries.
- *
- * A nested `setTimeout(0)` is clamped to 4ms after a few levels, and in a
- * backgrounded tab to a *second* -- which turns a streamed query into one that
- * never finishes. A message posted to a channel is a task like any other and
- * is not clamped, so it yields exactly as long as it takes the browser to
- * paint.
- */
-const yieldToBrowser = (() => {
-  const channel = new MessageChannel();
-  let resolve: (() => void) | null = null;
-  channel.port1.onmessage = () => {
-    const r = resolve;
-    resolve = null;
-    r?.();
-  };
-  return () =>
-    new Promise<void>((r) => {
-      resolve = r;
-      channel.port2.postMessage(null);
-    });
-})();
-
-/**
- * How long to work before yielding.
- *
- * One yield per batch would be one yield per 2048 rows, which on a
- * seven-million-row scan is three thousand round trips through the event loop
- * for sixty useful repaints. Sixteen milliseconds is a frame: the counter
- * still moves smoothly and the yields stop being the slowest part.
- */
-const FRAME_MS = 16;
 
 function run() {
   void runQuery();
 }
 
+/**
+ * Run the query and draw everything that follows from it.
+ *
+ * The engine is in a worker, so this awaits rather than blocks -- and the tab
+ * keeps painting for the whole query rather than only between batches. Which
+ * of the two shapes the worker uses is its decision, not this one's: it knows
+ * how big the tables are and it is the thing doing the work. `streamed` says
+ * which it chose, because a streamed result has already been drawn chunk by
+ * chunk and a whole one has not been drawn at all.
+ */
 async function runQuery() {
   const sql = editor.value.trim();
   if (!sql || running) return;
@@ -1516,28 +1469,61 @@ async function runQuery() {
   running = true;
   $<HTMLButtonElement>("run").disabled = true;
 
+  const body = $("tab-results");
+  const timing = $("timing");
+  let table: HTMLTableElement | null = null;
+  let shown = 0;
+
   try {
-    const biggest = (JSON.parse(engine.catalog()) as TableInfo[]).reduce(
-      (n, t) => Math.max(n, t.rows),
-      0
-    );
-    const meta = biggest >= STREAM_ABOVE_ROWS ? await runStreaming(sql) : runWhole(sql);
-    if (!meta) return;
+    const onProgress = (p: Progress) => {
+      if (!table) {
+        body.textContent = "";
+        if (p.chunk && p.chunk.meta.columns.length > 0) {
+          table = resultTable(p.chunk.meta);
+          body.appendChild(table);
+        }
+      }
+      if (table && p.chunk && shown < RESULT_CAP) {
+        shown += appendRows(table, p.chunk, RESULT_CAP - shown);
+      }
+      timing.textContent = `${p.rows.toLocaleString()} rows…`;
+      // The execution panel while the query is still running: rows climbing
+      // through each operator, the time bars redistributing, the estimate
+      // sitting still beside a number that is not. The worker sends the
+      // statistics once a frame, and only then -- reading them is not free.
+      if (p.stats && !$("tab-pipeline").hidden) renderPipeline(p.stats);
+    };
+
+    const done = await engine.execute(sql, onProgress);
+    const meta = done.meta;
+
+    if (done.streamed) {
+      if (done.rows === 0) {
+        body.innerHTML = '<p class="empty">no rows</p>';
+      } else if (shown < done.rows) {
+        const note = document.createElement("p");
+        note.className = "empty";
+        note.textContent = `showing the first ${shown.toLocaleString()} of ${done.rows.toLocaleString()} rows — the query computed all of them`;
+        body.appendChild(note);
+      }
+    } else if (done.chunk) {
+      renderResults(done.chunk);
+    }
 
     renderPipeline(meta.stats);
-    $("timing").textContent =
+    timing.textContent =
       `${meta.num_rows.toLocaleString()} row${meta.num_rows === 1 ? "" : "s"} in ${meta.elapsed_ms.toFixed(3)} ms`;
 
     try {
       // Two calls, because they are two stages: `parse` stops before the
       // binder and `plan` runs the optimizer.
-      const parsed = JSON.parse(engine.parse(sql)) as ParseInfo;
+      const parsed = await engine.parse(sql);
       renderTokens(parsed);
       renderAst(parsed);
-      const planned = JSON.parse(engine.plan(sql)) as PlanInfo;
+      const planned = await engine.plan(sql);
       renderPlan(planned);
       renderTrace(planned);
-      renderPhysical(sql);
+      await renderPhysical(sql);
     } catch {
       // A query can execute and still not re-plan (it cannot, in practice) --
       // but the results are already rendered, so a plan failure must not lose
@@ -1546,97 +1532,12 @@ async function runQuery() {
   } catch (e) {
     error.hidden = false;
     error.textContent = message(e);
-    $("tab-results").textContent = "";
-    $("timing").textContent = "";
+    body.textContent = "";
+    timing.textContent = "";
   } finally {
     running = false;
     $<HTMLButtonElement>("run").disabled = false;
   }
-}
-
-/** The whole result at once: one call, one render. */
-function runWhole(sql: string): OutcomeMeta {
-  const outcome = engine.execute(sql);
-  const meta = JSON.parse(outcome.meta) as OutcomeMeta;
-  renderResults(outcome, meta);
-  return meta;
-}
-
-/**
- * A batch at a time, drawing rows and a count as they arrive.
- *
- * The per-chunk `meta` carries the schema and the stats accumulated so far, so
- * the last one seen is the whole query's. `num_rows` on a chunk is that
- * chunk's, which is why the running total is counted here.
- */
-async function runStreaming(sql: string): Promise<OutcomeMeta | null> {
-  const body = $("tab-results");
-  body.textContent = "";
-  const timing = $("timing");
-
-  const progress = engine.executeStreaming(sql);
-  let table: HTMLTableElement | null = null;
-  let shown = 0;
-  let total = 0;
-  // The schema, read from the first chunk. Every later chunk carries the same
-  // one, and its `meta` also carries the whole operator-statistics tree --
-  // serialized afresh on each read, so reading it per batch would cost more
-  // than the batch did.
-  let schema: OutcomeMeta | null = null;
-  let lastMeta: OutcomeMeta | null = null;
-  let frameStart = performance.now();
-
-  for (;;) {
-    const chunk = progress.next();
-    if (!chunk) break;
-
-    if (!schema) {
-      schema = JSON.parse(chunk.meta) as OutcomeMeta;
-      lastMeta = schema;
-      if (schema.columns.length > 0) {
-        table = resultTable(schema);
-        body.appendChild(table);
-      }
-    }
-    total += chunk.len(0);
-    if (table && schema && shown < RESULT_CAP) {
-      shown += appendRows(table, chunk, schema, RESULT_CAP - shown);
-    }
-
-    if (performance.now() - frameStart >= FRAME_MS) {
-      timing.textContent = `${total.toLocaleString()} rows…`;
-      // The execution panel, while the query is still running: rows climbing
-      // through each operator, the time bars redistributing, the estimate
-      // sitting still beside a number that is not. Only when it is on screen
-      // -- the statistics tree is not free to read, and redrawing a hidden
-      // panel sixty times a second is the kind of cost that makes streaming
-      // slower than not streaming.
-      if (!$("tab-pipeline").hidden) {
-        renderPipeline(JSON.parse(progress.stats) as StatsInfo);
-      }
-      await yieldToBrowser();
-      frameStart = performance.now();
-    }
-  }
-
-  // Once, at the end, for the statistics the execution panel draws.
-  const last = lastMeta;
-  if (!last) return null;
-  if (total === 0) {
-    body.innerHTML = '<p class="empty">no rows</p>';
-  } else if (shown < total) {
-    const note = document.createElement("p");
-    note.className = "empty";
-    note.textContent = `showing the first ${shown.toLocaleString()} of ${total.toLocaleString()} rows — the query computed all of them`;
-    body.appendChild(note);
-  }
-
-  // The stream's own totals, so the timing line reports the query and not its
-  // last batch. The statistics tree is re-read here too: it accumulates as the
-  // stream runs, so only the final read describes the whole query.
-  const done = JSON.parse(progress.progress) as { rows: number; elapsed_ms: number };
-  const final = JSON.parse(progress.stats) as OutcomeMeta["stats"];
-  return { ...last, stats: final, num_rows: done.rows, elapsed_ms: done.elapsed_ms };
 }
 
 fetch(wasmUrl, { method: "HEAD" })

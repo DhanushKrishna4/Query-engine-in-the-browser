@@ -1198,11 +1198,7 @@ the character before it.
 - **Results are capped at 10,000 rows.** The engine computes every row -- the
   count and the timings are of the whole query -- but a grid cannot show a
   million, and the page says how many it is showing.
-- **It still runs on the main thread.** Streaming keeps the tab responsive --
-  see below -- but the work is still on it, and a worker is the real fix. The
-  clock already reaches `performance` through the global rather than through
-  `window` so that it will work there.
-- **And on one thread.** GitHub Pages cannot set the COOP/COEP headers
+- **On one thread.** GitHub Pages cannot set the COOP/COEP headers
   `SharedArrayBuffer` needs, so wasm threads are not available here at all.
   What the design does buy is that adding them later is a plan change rather
   than a storage rewrite: a pull-based operator returning batches is the shape
@@ -1219,39 +1215,57 @@ the character before it.
   is a different piece of software; this draws a faithful sample with the path
   intact and says how many nodes it stood in for.
 
-### Streaming, and the yield that matters
+### The engine is in a worker
 
-`Engine::execute_streaming` hands back one batch at a time; the page uses it
-whenever a loaded table has more than 200,000 rows. Three million rows of
-projected output take about four seconds in the tab, and the difference between
-four seconds of frozen page and four seconds of a counter climbing through
-`681,743 rows…` is the whole reason the export exists.
+`web/src/worker.ts` owns the wasm module; the page holds an `EngineClient` and
+never touches wasm memory at all. A query cannot freeze the tab because a query
+does not run on the tab's thread.
 
-Two things about it were not obvious.
+That costs the one optimization the boundary was built around. On the main
+thread a result could be *viewed* in place -- typed arrays straight onto the
+module's memory, no copy at any size. A `WebAssembly.Memory` buffer is not
+transferable, so each column is now copied into a fresh buffer and transferred
+zero-copy from there. The copy is bounded by what the grid draws (10,000 rows)
+rather than by what the query computed, so a three-million-row result still
+crosses as a few hundred kilobytes.
+
+Streaming survives the move: the worker decides whether to answer once or send
+a chunk per frame, because it is the thing that knows how big the tables are.
+Four things about getting there were not obvious.
 
 **Yield on a frame budget, not per batch.** A batch is 2048 rows, so a
-seven-million-row scan is three thousand round trips through the event loop for
-sixty useful repaints. The loop now works until sixteen milliseconds have
-passed and only then yields.
+seven-million-row scan is three thousand messages for sixty useful repaints.
+The loop works for sixteen milliseconds and then reports.
 
-**`setTimeout` is the wrong yield.** Nested timeouts are clamped to 4ms, and in
-a backgrounded tab to a *second* -- which turned a four-second query into one
-that never finished. A message posted to a `MessageChannel` is an ordinary task
-and is not clamped. The first version of this streamed 32,000 rows in
-forty-five seconds and looked like an engine bug.
+**`setTimeout` was the wrong yield**, back when the yielding happened on the
+main thread. Nested timeouts are clamped to 4ms and in a backgrounded tab to a
+*second*, which turned a four-second query into one that never finished. The
+first version streamed 32,000 rows in forty-five seconds and looked like an
+engine bug.
 
 **Read the statistics once.** Each chunk's `meta` carries the whole
-operator-statistics tree, serialized afresh on every read -- including, now, a
-verdict per row group. Reading it per batch costs more than the batch did. The
-schema comes from the first chunk, the row count from the chunk itself, and the
-statistics from a getter on the stream, once, at the end.
+operator-statistics tree, serialized afresh on every read -- including a
+verdict per row group. Reading it per batch costs more than the batch did. Once
+per *frame* is affordable, and that is what makes the execution panel live:
+while a query runs, the scan's row count climbs through `18,432 · 1,181,696 ·
+3,606,528 · 5,965,824 · 7,433,139` and the time bars redistribute under it.
 
-Once per *frame*, though, is affordable, and that is what makes the execution
-panel live: while a streamed query runs, the scan's row count climbs through
-`18,432 · 1,181,696 · 3,606,528 · 5,965,824 · 7,433,139` and the time bars
-redistribute under it. Only when that panel is on screen -- redrawing a hidden
-one sixty times a second is the kind of cost that makes streaming slower than
-not streaming.
+**Then the renderer became the slow part.** With the engine off the main
+thread, what remained was `insertRow`/`insertCell` into a table already in the
+document -- eleven long tasks and a 471 ms one among them, against 1.3 seconds
+for the query itself. Rows are built as one HTML string per chunk and attached
+once. Same 10,000 rows, and the longest block anywhere in a four-second query
+falls to 74 ms:
+
+```text
+                          before    after
+  longest main-thread block   471 ms    74 ms
+  total blocked               2.5 s    206 ms
+```
+
+The benchmark page deliberately keeps the engine on the main thread. It times
+this engine against sql.js in the same tab on the same clock, and moving one of
+them to a worker would make the comparison meaningless.
 
 ## The physical plan, and why
 

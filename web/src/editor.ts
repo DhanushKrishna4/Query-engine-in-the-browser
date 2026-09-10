@@ -68,8 +68,14 @@ export interface EditorOptions {
   parent: HTMLElement;
   initial: string;
   onRun: () => void;
-  /** Re-parsed on every change; return null when the query is valid. */
-  check: (sql: string) => SpanError | null;
+  /**
+   * Re-parsed on every change; resolves to null when the query is valid.
+   *
+   * Async because the engine is in a worker. CodeMirror's linter takes a
+   * promise, so nothing else about this changes -- and a check that has to
+   * cross a thread is still far cheaper than the debounce in front of it.
+   */
+  check: (sql: string) => Promise<SpanError | null>;
   /** The catalog, for completion. Read afresh each time it is consulted. */
   tables: () => TableInfo[];
 }
@@ -223,11 +229,11 @@ export class SqlEditor {
    * been typed is noise -- and a diagnostic with no span underlines the whole
    * query rather than guessing at a position.
    */
-  private lint(view: EditorView): Diagnostic[] {
+  private async lint(view: EditorView): Promise<Diagnostic[]> {
     const text = view.state.doc.toString();
     if (text.trim() === "") return [];
 
-    const error = this.options.check(text);
+    const error = await this.options.check(text);
     if (!error) return [];
 
     const from = byteToChar(text, error.start);
