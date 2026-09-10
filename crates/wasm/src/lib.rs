@@ -1073,6 +1073,16 @@ impl QueryProgress {
         Ok(Some(build_outcome(&result)))
     }
 
+    /// The operator statistics tree, as it stands.
+    ///
+    /// A separate getter because reading it is not free -- it serializes the
+    /// whole tree, verdict arrays included -- and a page streaming a
+    /// seven-million-row scan wants it once at the end, not once per batch.
+    #[wasm_bindgen(getter)]
+    pub fn stats(&self) -> String {
+        serde_json::to_string(&stats_info(&self.stream.stats())).unwrap_or_default()
+    }
+
     /// Rows handed over so far, and whether there are more.
     #[wasm_bindgen(getter)]
     pub fn progress(&self) -> String {

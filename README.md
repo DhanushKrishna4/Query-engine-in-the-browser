@@ -1192,9 +1192,10 @@ the character before it.
 - **Results are capped at 10,000 rows.** The engine computes every row -- the
   count and the timings are of the whole query -- but a grid cannot show a
   million, and the page says how many it is showing.
-- **It runs on the main thread**, so a long query freezes the tab. A worker is
-  the fix, and the clock already reaches `performance` through the global rather
-  than through `window` so that it will work there.
+- **It still runs on the main thread.** Streaming keeps the tab responsive --
+  see below -- but the work is still on it, and a worker is the real fix. The
+  clock already reaches `performance` through the global rather than through
+  `window` so that it will work there.
 - **The pipeline shows batches, not their contents.** Watching a selection
   vector narrow batch by batch would need per-batch events rather than
   per-operator totals, which is a change to the `Operator` trait rather than to
@@ -1202,6 +1203,33 @@ the character before it.
 - **The index visualizer samples wide levels.** Panning and zooming a full tree
   is a different piece of software; this draws a faithful sample with the path
   intact and says how many nodes it stood in for.
+
+### Streaming, and the yield that matters
+
+`Engine::execute_streaming` hands back one batch at a time; the page uses it
+whenever a loaded table has more than 200,000 rows. Three million rows of
+projected output take about four seconds in the tab, and the difference between
+four seconds of frozen page and four seconds of a counter climbing through
+`681,743 rows…` is the whole reason the export exists.
+
+Two things about it were not obvious.
+
+**Yield on a frame budget, not per batch.** A batch is 2048 rows, so a
+seven-million-row scan is three thousand round trips through the event loop for
+sixty useful repaints. The loop now works until sixteen milliseconds have
+passed and only then yields.
+
+**`setTimeout` is the wrong yield.** Nested timeouts are clamped to 4ms, and in
+a backgrounded tab to a *second* -- which turned a four-second query into one
+that never finished. A message posted to a `MessageChannel` is an ordinary task
+and is not clamped. The first version of this streamed 32,000 rows in
+forty-five seconds and looked like an engine bug.
+
+**Read the statistics once.** Each chunk's `meta` carries the whole
+operator-statistics tree, serialized afresh on every read -- including, now, a
+verdict per row group. Reading it per batch costs more than the batch did. The
+schema comes from the first chunk, the row count from the chunk itself, and the
+statistics from a getter on the stream, once, at the end.
 
 ## The physical plan, and why
 

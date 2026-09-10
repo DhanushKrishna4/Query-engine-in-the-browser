@@ -415,17 +415,8 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string): T => {
 const message = (e: unknown): string =>
   e instanceof Error ? e.message : String(e);
 
-function renderResults(outcome: Outcome, meta: OutcomeMeta) {
-  const body = $("tab-results");
-  body.textContent = "";
-  if (meta.columns.length === 0) {
-    body.innerHTML = '<p class="empty">no columns</p>';
-    return;
-  }
-
-  const views = meta.columns.map((_, i) => columnViews(outcome, i));
-  const rows = views[0]?.rows ?? 0;
-
+/** The header row for a result, built once whether or not it streams. */
+function resultTable(meta: OutcomeMeta): HTMLTableElement {
   const table = document.createElement("table");
   const head = table.createTHead().insertRow();
   for (const column of meta.columns) {
@@ -434,8 +425,27 @@ function renderResults(outcome: Outcome, meta: OutcomeMeta) {
     th.title = column.type + (column.nullable ? " (nullable)" : "");
     head.appendChild(th);
   }
-  const tbody = table.createTBody();
-  for (let row = 0; row < rows; row++) {
+  table.createTBody();
+  return table;
+}
+
+/**
+ * Append one chunk's rows, up to `budget` of them.
+ *
+ * Returns how many it wrote. The views are built here and used here: a typed
+ * array over wasm memory is valid only until wasm allocates again, and the
+ * next chunk allocates.
+ */
+function appendRows(
+  table: HTMLTableElement,
+  outcome: Outcome,
+  meta: OutcomeMeta,
+  budget: number
+): number {
+  const views = meta.columns.map((_, i) => columnViews(outcome, i));
+  const available = Math.min(views[0]?.rows ?? 0, budget);
+  const tbody = table.tBodies[0];
+  for (let row = 0; row < available; row++) {
     const tr = tbody.insertRow();
     for (let c = 0; c < views.length; c++) {
       const td = tr.insertCell();
@@ -444,12 +454,24 @@ function renderResults(outcome: Outcome, meta: OutcomeMeta) {
         td.className = "null";
         td.textContent = "NULL";
       } else {
-        const numeric = typeof value === "number" || typeof value === "bigint";
-        if (numeric) td.className = "num";
-        td.textContent = String(value);
+        td.className = views[c].kind === ColumnKind.Utf8 ? "" : "num";
+        td.textContent = value;
       }
     }
   }
+  return available;
+}
+
+function renderResults(outcome: Outcome, meta: OutcomeMeta) {
+  const body = $("tab-results");
+  body.textContent = "";
+  if (meta.columns.length === 0) {
+    body.innerHTML = '<p class="empty">no columns</p>';
+    return;
+  }
+
+  const table = resultTable(meta);
+  const rows = appendRows(table, outcome, meta, Infinity);
   if (rows === 0) {
     body.innerHTML = '<p class="empty">no rows</p>';
     return;
@@ -1428,41 +1450,180 @@ async function loadCollection(collection: Collection, button: HTMLButtonElement)
   }
 }
 
+/** Rows the grid will draw. The engine computes every row either way. */
+const RESULT_CAP = 10_000;
+
+/**
+ * Rows a table can hold before a query is run a batch at a time.
+ *
+ * The engine runs on the main thread, so a query that takes a second takes the
+ * tab with it: no progress, no repaint, no way to tell a slow query from a
+ * hung one. Streaming hands back a batch at a time and this yields to the
+ * event loop between them, which buys a row counter that moves.
+ *
+ * Small tables go the whole-result route because at three rows the counter
+ * would flash once and the yields would be the slowest part of the query.
+ */
+const STREAM_ABOVE_ROWS = 200_000;
+
+/** Set while a query is running, so a second Run cannot interleave with it. */
+let running = false;
+
+/**
+ * Yield to the event loop, without the throttling `setTimeout` carries.
+ *
+ * A nested `setTimeout(0)` is clamped to 4ms after a few levels, and in a
+ * backgrounded tab to a *second* -- which turns a streamed query into one that
+ * never finishes. A message posted to a channel is a task like any other and
+ * is not clamped, so it yields exactly as long as it takes the browser to
+ * paint.
+ */
+const yieldToBrowser = (() => {
+  const channel = new MessageChannel();
+  let resolve: (() => void) | null = null;
+  channel.port1.onmessage = () => {
+    const r = resolve;
+    resolve = null;
+    r?.();
+  };
+  return () =>
+    new Promise<void>((r) => {
+      resolve = r;
+      channel.port2.postMessage(null);
+    });
+})();
+
+/**
+ * How long to work before yielding.
+ *
+ * One yield per batch would be one yield per 2048 rows, which on a
+ * seven-million-row scan is three thousand round trips through the event loop
+ * for sixty useful repaints. Sixteen milliseconds is a frame: the counter
+ * still moves smoothly and the yields stop being the slowest part.
+ */
+const FRAME_MS = 16;
+
 function run() {
+  void runQuery();
+}
+
+async function runQuery() {
   const sql = editor.value.trim();
-  if (!sql) return;
+  if (!sql || running) return;
   const error = $("error");
   error.hidden = true;
+  running = true;
+  $<HTMLButtonElement>("run").disabled = true;
 
-  let outcome;
   try {
-    outcome = engine.query(sql);
+    const biggest = (JSON.parse(engine.tables()) as TableInfo[]).reduce(
+      (n, t) => Math.max(n, t.rows),
+      0
+    );
+    const meta = biggest >= STREAM_ABOVE_ROWS ? await runStreaming(sql) : runWhole(sql);
+    if (!meta) return;
+
+    renderPipeline(meta.stats);
+    $("timing").textContent =
+      `${meta.num_rows.toLocaleString()} row${meta.num_rows === 1 ? "" : "s"} in ${meta.elapsed_ms.toFixed(3)} ms`;
+
+    try {
+      const explain = JSON.parse(engine.explain(sql));
+      renderTokens(explain);
+      renderAst(explain);
+      renderPlan(explain);
+      renderTrace(explain);
+      renderPhysical(sql);
+    } catch {
+      // A query can execute and still not re-plan (it cannot, in practice) --
+      // but the results are already rendered, so a plan failure must not lose
+      // them.
+    }
   } catch (e) {
     error.hidden = false;
     error.textContent = message(e);
     $("tab-results").textContent = "";
     $("timing").textContent = "";
-    return;
+  } finally {
+    running = false;
+    $<HTMLButtonElement>("run").disabled = false;
   }
+}
 
-  const meta = JSON.parse(outcome.meta);
+/** The whole result at once: one call, one render. */
+function runWhole(sql: string): OutcomeMeta {
+  const outcome = engine.query(sql);
+  const meta = JSON.parse(outcome.meta) as OutcomeMeta;
   renderResults(outcome, meta);
-  renderPipeline(meta.stats);
-  $("timing").textContent =
-    `${meta.num_rows.toLocaleString()} row${meta.num_rows === 1 ? "" : "s"} in ${meta.elapsed_ms.toFixed(3)} ms`;
+  return meta;
+}
 
-  try {
-    const explain = JSON.parse(engine.explain(sql));
-    renderTokens(explain);
-    renderAst(explain);
-    renderPlan(explain);
-    renderTrace(explain);
-    renderPhysical(sql);
-  } catch {
-    // A query can execute and still not re-plan (it cannot, in practice) --
-    // but the results are already rendered, so a plan failure must not lose
-    // them.
+/**
+ * A batch at a time, drawing rows and a count as they arrive.
+ *
+ * The per-chunk `meta` carries the schema and the stats accumulated so far, so
+ * the last one seen is the whole query's. `num_rows` on a chunk is that
+ * chunk's, which is why the running total is counted here.
+ */
+async function runStreaming(sql: string): Promise<OutcomeMeta | null> {
+  const body = $("tab-results");
+  body.textContent = "";
+  const timing = $("timing");
+
+  const progress = engine.stream(sql);
+  let table: HTMLTableElement | null = null;
+  let shown = 0;
+  let total = 0;
+  // The schema, read from the first chunk. Every later chunk carries the same
+  // one, and its `meta` also carries the whole operator-statistics tree --
+  // serialized afresh on each read, so reading it per batch would cost more
+  // than the batch did.
+  let schema: OutcomeMeta | null = null;
+  let lastMeta: OutcomeMeta | null = null;
+  let frameStart = performance.now();
+
+  for (;;) {
+    const chunk = progress.next();
+    if (!chunk) break;
+
+    if (!schema) {
+      schema = JSON.parse(chunk.meta) as OutcomeMeta;
+      lastMeta = schema;
+      if (schema.columns.length > 0) {
+        table = resultTable(schema);
+        body.appendChild(table);
+      }
+    }
+    total += chunk.len(0);
+    if (table && schema && shown < RESULT_CAP) {
+      shown += appendRows(table, chunk, schema, RESULT_CAP - shown);
+    }
+
+    if (performance.now() - frameStart >= FRAME_MS) {
+      timing.textContent = `${total.toLocaleString()} rows…`;
+      await yieldToBrowser();
+      frameStart = performance.now();
+    }
   }
+
+  // Once, at the end, for the statistics the execution panel draws.
+  const last = lastMeta;
+  if (!last) return null;
+  if (total === 0) {
+    body.innerHTML = '<p class="empty">no rows</p>';
+  } else if (shown < total) {
+    const note = document.createElement("p");
+    note.className = "empty";
+    note.textContent = `showing the first ${shown.toLocaleString()} of ${total.toLocaleString()} rows — the query computed all of them`;
+    body.appendChild(note);
+  }
+
+  // The stream's own totals, so the timing line reports the query and not its
+  // last batch. The statistics tree is re-read here too: it accumulates as the
+  // stream runs, so only the final read describes the whole query.
+  const done = JSON.parse(progress.progress) as { rows: number; elapsed_ms: number };
+  const final = JSON.parse(progress.stats) as OutcomeMeta["stats"];
+  return { ...last, stats: final, num_rows: done.rows, elapsed_ms: done.elapsed_ms };
 }
 
 fetch(wasmUrl, { method: "HEAD" })
