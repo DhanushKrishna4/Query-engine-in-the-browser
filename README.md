@@ -15,9 +15,10 @@ No SQL parser crates, no DataFusion/Polars/DuckDB, no Arrow. The engine crate
 has **zero dependencies** and CI fails if it grows one.
 
 **Status: the twenty build-order steps are done**, with real exceptions rather
-than a clean sweep -- the storage layer has no compression encodings of its own
-and several rewrite rules the spec lists are missing. Those and twenty others are written down in
-[Deliberate gaps](#deliberate-gaps); nothing is claimed there that is not
+than a clean sweep -- nothing records that a table arrived sorted, so there is no
+merge join; a CTE is opaque to the optimizer; and `COUNT(*)` reads a column
+instead of answering from the catalog. Those and twenty-five others are written
+down in [Deliberate gaps](#deliberate-gaps); nothing is claimed there that is not
 true here.
 
 Headline ratios, every one measured in a single sitting against the same engine
@@ -35,9 +36,10 @@ were not when each was taken on the day its feature landed:
 | cost-based join ordering | **1.7x** | a join written in the wrong order |
 | bloom filters | **349x** | an absent value inside every row group's range |
 
-And against [sql.js](#against-sqljs) — SQLite compiled to WebAssembly — over
-200,000 rows in the same tab: 12 of 14 measurable queries went this way, up to
-36x on filtered aggregates. The two it lost are in that section, with why.
+And against [sql.js](#against-sqljs) -- SQLite compiled to WebAssembly -- over
+200,000 rows in the same tab: 13 of the 15 measurable queries went this way, by
+as much as 128x on a point lookup and 36x on a filtered count. The two it lost
+are in that section, with why.
 
 Every operator reports what the optimizer predicted beside what it actually
 produced, because the gap between them is the most informative number a query
@@ -1488,8 +1490,9 @@ loudly when the answer is no.
 | point lookup by `id` | 0.2 ms | &lt;0.1 ms | *too fast to time* | 1 |
 | a narrow `id` range | 0.3 ms | &lt;0.1 ms | *too fast to time* | 1 |
 
-Twelve of the fourteen measurable queries went this way. The split is the one
-the architectures predict, and the two losses are the informative rows.
+Thirteen of the fifteen measurable queries went this way -- the two indexed rows
+are excluded because sql.js finishes them below the clock's resolution. The split
+is the one the architectures predict, and the two losses are the informative rows.
 
 **`COUNT(*)` loses at 0.35x.** SQLite does not read the table for it; it walks
 a B-tree counting entries. This engine reads a column. There is a cheap answer
@@ -2241,7 +2244,7 @@ group and got compacted every time. That alone cost 2x.
 
 ## Testing
 
-`cargo test` -- 363 tests plus a 1,066-record sqllogictest corpus, every query
+`cargo test` -- 364 tests plus a 1,066-record sqllogictest corpus, every query
 of which is additionally run seven ways and compared, run twice more against
 Parquet-backed tables (once with the writer's statistics and once against files
 that carry none), and scored for estimation accuracy. Property tests generate
