@@ -149,6 +149,20 @@ a:hover { text-decoration-thickness: 2px; }
   .figures dt { font-size: 1.3rem; }
 }
 
+/* The name carries the masthead; the tagline carries what it is. It sits where
+   the headline's second line used to, so the italic contrast survives. */
+.tagline {
+  font-family: var(--display);
+  font-optical-sizing: auto;
+  font-weight: 400;
+  font-size: clamp(1.5rem, 3.6vw, 2.5rem);
+  line-height: 1.1;
+  letter-spacing: -.015em;
+  color: var(--ink-soft);
+  margin: -1.2rem 0 2rem;
+}
+.tagline em { font-style: italic; }
+
 .standfirst {
   max-width: var(--measure);
   font-size: 1.24rem;

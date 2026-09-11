@@ -1,4 +1,6 @@
-# Query engine in the browser
+# Orrery
+
+*A query engine in the browser.*
 
 ### **→ [dhanushkrishna4.github.io/Query-engine-in-the-browser](https://dhanushkrishna4.github.io/Query-engine-in-the-browser/)**
 
