@@ -51,6 +51,18 @@ for f in sql-wasm.js sql-wasm.wasm; do
   fi
 done
 
+# The social card is generated, not hand-drawn, so it stays in step with the
+# page's own colours and type. Skipped rather than fatal where Pillow is
+# missing: it is a picture, and a build should not fail for want of one.
+if [[ ! -f web/public/og-v1.png ]]; then
+  if python3 -c "import PIL" 2>/dev/null; then
+    echo "==> drawing the social card"
+    python3 tools/make_og_card.py
+  else
+    echo "  (skipped the social card: Pillow is not installed)" >&2
+  fi
+fi
+
 echo "==> installing node dependencies"
 # `npm ci` when the lockfile is authoritative, which it is everywhere except a
 # freshly edited package.json.
