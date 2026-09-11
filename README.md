@@ -2,7 +2,7 @@
 
 *A query engine in the browser.*
 
-### **→ [dhanushkrishna4.github.io/Query-engine-in-the-browser](https://dhanushkrishna4.github.io/Query-engine-in-the-browser/)**
+### **→ [dhanushkrishna4.github.io/Orrery](https://dhanushkrishna4.github.io/Orrery/)**
 
 An analytical SQL query engine written from scratch in Rust, compiled to
 WebAssembly and running entirely in a browser tab. There is no backend: the
@@ -92,8 +92,8 @@ Run one test file: `qe --slt tests/sqllogictest/null.slt`.
 Benchmark: `qe --load trips=/tmp/trips.csv --bench benches/taxi.sql`.
 
 In a browser, without installing anything:
-**[the live site](https://dhanushkrishna4.github.io/Query-engine-in-the-browser/)**,
-and **[/bench.html](https://dhanushkrishna4.github.io/Query-engine-in-the-browser/bench.html)**
+**[the live site](https://dhanushkrishna4.github.io/Orrery/)**,
+and **[/bench.html](https://dhanushkrishna4.github.io/Orrery/bench.html)**
 for the head-to-head against sql.js. To run that same page locally against your
 own build, `tools/build_web.sh --serve` serves it on http://localhost:8137;
 without `--serve` it produces `web/dist`, which is what the site is.
@@ -935,7 +935,7 @@ wrong direction.
 ## In the browser
 
 Running at
-**[dhanushkrishna4.github.io/Query-engine-in-the-browser](https://dhanushkrishna4.github.io/Query-engine-in-the-browser/)**,
+**[dhanushkrishna4.github.io/Orrery](https://dhanushkrishna4.github.io/Orrery/)**,
 or locally against your own build:
 
 ```bash
@@ -1447,7 +1447,7 @@ placeholder zeros. It stores a whole `Column` now.
 
 ## Against sql.js
 
-**[Run it yourself](https://dhanushkrishna4.github.io/Query-engine-in-the-browser/bench.html)**
+**[Run it yourself](https://dhanushkrishna4.github.io/Orrery/bench.html)**
 -- the numbers below are from one machine and yours will differ. Locally:
 
 ```bash
@@ -1542,7 +1542,7 @@ printing a ratio.
 ## Deploying
 
 Live at
-**[dhanushkrishna4.github.io/Query-engine-in-the-browser](https://dhanushkrishna4.github.io/Query-engine-in-the-browser/)**.
+**[dhanushkrishna4.github.io/Orrery](https://dhanushkrishna4.github.io/Orrery/)**.
 
 The site is static: a `.wasm`, a bundle, the sample data and sql.js. Nothing
 runs on a server, so there is no server to deploy -- `tools/build_web.sh`
