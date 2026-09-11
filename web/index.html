@@ -62,7 +62,7 @@
 
     <dl class="figures">
       <div><dt>7,433,139</dt><dd>rows in one Parquet file, queried here</dd></div>
-      <div><dt>1,066</dt><dd>queries answered by SQLite and compared</dd></div>
+      <div><dt>972</dt><dd>queries answered by SQLite and compared</dd></div>
       <div><dt>0</dt><dd>dependencies in the engine crate</dd></div>
       <div><dt>12,252</dt><dd>SIMD instructions in the shipped module</dd></div>
     </dl>
@@ -222,8 +222,8 @@
       <article>
         <h3>Answered twice</h3>
         <p>
-          Every query in a 1,066-record corpus is put to this engine and to
-          SQLite, and the answers compared. A semantic bug — three-valued NULL
+          All 972 queries in a 1,066-record corpus are put to this engine and
+          to SQLite, and the answers compared. A semantic bug — three-valued NULL
           logic, <code>NOT IN</code> over a nullable subquery, an outer join's
           padding — shows up as a disagreement rather than as something nobody
           noticed.

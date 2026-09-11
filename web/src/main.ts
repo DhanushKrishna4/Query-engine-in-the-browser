@@ -1632,6 +1632,22 @@ function run() {
 }
 
 /**
+ * The note beside the editor describes what to watch in the panels below, so
+ * it is only true while those panels are showing the example it belongs to.
+ *
+ * Edit the query and the note becomes a claim about a rewrite that may not
+ * happen -- and it survived even an error, sitting above three panels saying
+ * the query did not bind. It is cleared the moment the text stops being the
+ * example's, and restored if the text comes back (an undo, or retyping it),
+ * because the note is right again then. `.marginalia:empty` hides the rule in
+ * the margin with it, which is the same thing a shared link already does.
+ */
+function syncNote(sql: string) {
+  const example = examples[Number($<HTMLSelectElement>("examples").value)];
+  $("watch").textContent = example && sql === example.sql.trim() ? example.watch : "";
+}
+
+/**
  * Run the query and draw everything that follows from it.
  *
  * The engine is in a worker, so this awaits rather than blocks -- and the tab
@@ -1644,6 +1660,7 @@ function run() {
 async function runQuery() {
   const sql = editor.value.trim();
   if (!sql || running) return;
+  syncNote(sql);
   const error = $("error");
   error.hidden = true;
   running = true;

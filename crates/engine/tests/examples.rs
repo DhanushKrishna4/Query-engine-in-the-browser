@@ -169,3 +169,86 @@ fn every_example_shows_the_rule_it_promises() {
 
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// The corpus figures printed on the page are counted from the corpus.
+///
+/// The page leads with two numbers about `tests/sqllogictest/`: how many
+/// queries SQLite answered, and how many records the corpus holds. They are
+/// different numbers -- a corpus record can be a `load`, an `index` or a
+/// `statement` as well as a `query`, and only the queries have an answer to
+/// compare -- and the page said 1,066 for both, which counted `CREATE TABLE`
+/// as a query SQLite had answered.
+///
+/// A number typed into HTML drifts the moment the corpus grows. Counting it
+/// here means adding one `.slt` record fails this test rather than quietly
+/// making the front page wrong.
+#[test]
+fn the_page_counts_the_corpus_correctly() {
+    let root = repo_root();
+
+    let mut queries = 0usize;
+    let mut records = 0usize;
+    let mut files = 0usize;
+    for entry in std::fs::read_dir(root.join("tests/sqllogictest")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|x| x != "slt") {
+            continue;
+        }
+        files += 1;
+        for line in std::fs::read_to_string(&path).unwrap().lines() {
+            // The four record kinds the harness counts as passed. `skipif` and
+            // `onlyif` sit on their own line above one of these, so a record is
+            // still counted exactly once.
+            if line.starts_with("query ") {
+                queries += 1;
+                records += 1;
+            } else if line.starts_with("statement ")
+                || line.starts_with("load ")
+                || line.starts_with("index ")
+            {
+                records += 1;
+            }
+        }
+    }
+    assert!(files >= 10, "only found {files} .slt files; the corpus moved");
+    assert!(queries > 0 && records > queries, "counted {queries} queries in {records} records");
+
+    let page = std::fs::read_to_string(root.join("web/index.html")).unwrap();
+
+    // The figure: the `<dt>` immediately before the caption that makes the
+    // claim. Located by the caption so it cannot match some other number.
+    const CAPTION: &str = "queries answered by SQLite and compared";
+    let at = page
+        .find(CAPTION)
+        .unwrap_or_else(|| panic!("web/index.html no longer contains the caption `{CAPTION}`"));
+    let figure = page[..at]
+        .rfind("<dt>")
+        .map(|i| &page[i + "<dt>".len()..])
+        .and_then(|t| t.split("</dt>").next())
+        .expect("no <dt> before the SQLite figure");
+    assert_eq!(
+        figure,
+        thousands(queries),
+        "the page says {figure} queries, the corpus has {queries}"
+    );
+
+    // And the corpus size, wherever the page says "N-record corpus".
+    let phrase = format!("{}-record corpus", thousands(records));
+    assert!(
+        page.contains(&phrase),
+        "web/index.html does not say `{phrase}`; the corpus holds {records} records"
+    );
+}
+
+/// `1066` as `1,066`, which is how the page writes a number.
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}

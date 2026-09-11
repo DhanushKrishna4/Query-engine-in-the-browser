@@ -2244,7 +2244,7 @@ group and got compacted every time. That alone cost 2x.
 
 ## Testing
 
-`cargo test` -- 364 tests plus a 1,066-record sqllogictest corpus, every query
+`cargo test` -- 365 tests plus a 1,066-record sqllogictest corpus, every query
 of which is additionally run seven ways and compared, run twice more against
 Parquet-backed tables (once with the writer's statistics and once against files
 that carry none), and scored for estimation accuracy. Property tests generate
